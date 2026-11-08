@@ -11,7 +11,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
 import android.view.View
 import android.widget.*
 import androidx.activity.ComponentActivity
@@ -22,22 +21,21 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 /**
- * Single-screen BLE tracker for the INVT EVC16 charger.
- * Scans for the charger, connects, enables notifications on 0xC305,
- * writes the status-query frame to 0xC303 every few seconds, reassembles
- * fragments, decodes, shows live values, and logs each session to CSV.
+ * DEBUG build: connects to the INVT EVC16 charger over BLE, enables notify (0xC305)
+ * and indicate (0xC306), polls the status query to 0xC303, and LOGS EVERY RAW
+ * notification as hex so we can see exactly what the charger sends back.
  */
 class MainActivity : ComponentActivity() {
 
     companion object {
-        // 16-bit UUIDs expand into the Bluetooth base UUID.
         val SVC: UUID = uuid16(0xA002)
-        val WRITE_CHAR: UUID = uuid16(0xC303)   // write-no-response (confirmed replying)
-        val WRITE_CHAR_ALT: UUID = uuid16(0xC302) // write-with-response fallback
+        val WRITE_NR: UUID = uuid16(0xC303)   // write-no-response (elicited a reply in nRF)
+        val WRITE_WR: UUID = uuid16(0xC302)   // write-with-response
         val NOTIFY_CHAR: UUID = uuid16(0xC305)
+        val INDICATE_CHAR: UUID = uuid16(0xC306)
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         const val POLL_MS = 3000L
-        const val NAME_PREFIX = "3UC"   // charger advertises e.g. 3UC243403423
+        const val NAME_PREFIX = "3UC"
 
         fun uuid16(v: Int): UUID =
             UUID.fromString(String.format("0000%04x-0000-1000-8000-00805f9b34fb", v))
@@ -45,21 +43,19 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var btAdapter: BluetoothAdapter
     private var gatt: BluetoothGatt? = null
-    private var writeChar: BluetoothGattCharacteristic? = null
+    private var writeNr: BluetoothGattCharacteristic? = null
+    private var writeWr: BluetoothGattCharacteristic? = null
     private val reasm = InvtProtocol.Reassembler()
     private val main = Handler(Looper.getMainLooper())
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
     private val dayFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+    private var pollCount = 0
 
-    // session tracking
-    private var sess: MutableMap<String, Any>? = null
-
-    // UI
-    private lateinit var statusText: TextView
-    private lateinit var stateBadge: TextView
-    private lateinit var grid: TextView
-    private lateinit var log: TextView
-    private lateinit var connectBtn: Button
+    private var statusText: TextView? = null
+    private var stateBadge: TextView? = null
+    private var grid: TextView? = null
+    private var log: TextView? = null
+    private var connectBtn: Button? = null
 
     private val needPerms: Array<String>
         get() = if (Build.VERSION.SDK_INT >= 31)
@@ -83,7 +79,7 @@ class MainActivity : ComponentActivity() {
             setPadding(pad, pad, pad, pad)
         }
         val title = TextView(this).apply {
-            text = "INVT EV Charger — Bluetooth"
+            text = "INVT EV Charger — BT (debug)"
             textSize = 20f; setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
         statusText = TextView(this).apply { text = "Not connected"; textSize = 14f; setPadding(0, pad / 2, 0, pad / 2) }
@@ -96,11 +92,12 @@ class MainActivity : ComponentActivity() {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
         grid = TextView(this).apply { text = ""; textSize = 15f; setPadding(0, pad / 2, 0, pad / 2) }
-        val startBtn = Button(this).apply { text = "Start charging"; setOnClickListener { sendCmd(true) } }
-        val stopBtn = Button(this).apply { text = "Stop charging"; setOnClickListener { sendCmd(false) } }
+        val startBtn = Button(this).apply { text = "Start"; setOnClickListener { sendCmd(true) } }
+        val stopBtn = Button(this).apply { text = "Stop"; setOnClickListener { sendCmd(false) } }
+        val probeBtn = Button(this).apply { text = "Probe"; setOnClickListener { probe() } }
         val btnRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(startBtn, lp()); addView(stopBtn, lp())
+            addView(startBtn, lp()); addView(stopBtn, lp()); addView(probeBtn, lp())
         }
         log = TextView(this).apply { text = ""; textSize = 12f; setPadding(0, pad, 0, 0) }
 
@@ -122,7 +119,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onRequestPermissionsResult(rc: Int, p: Array<String>, r: IntArray) {
         super.onRequestPermissionsResult(rc, p, r)
-        logln(if (r.all { it == PackageManager.PERMISSION_GRANTED }) "Permissions granted" else "Permissions denied — app needs Bluetooth")
+        logln(if (r.all { it == PackageManager.PERMISSION_GRANTED }) "Permissions granted" else "Permissions denied")
     }
 
     @SuppressLint("MissingPermission")
@@ -144,7 +141,6 @@ class MainActivity : ComponentActivity() {
                 override fun onScanFailed(code: Int) { setStatus("Scan failed ($code)") }
             }
             scanner.startScan(cb)
-            // stop scanning after 15s if nothing found
             main.postDelayed({ try { scanner.stopScan(cb) } catch (_: Exception) {} }, 15000)
         }
     }
@@ -160,159 +156,167 @@ class MainActivity : ComponentActivity() {
         main.removeCallbacks(pollRunnable)
         gatt?.disconnect(); gatt?.close(); gatt = null
         setStatus("Not connected")
-        runOnUiThread { connectBtn.text = "Connect" }
+        runOnUiThread { connectBtn?.text = "Connect" }
     }
+
+    private fun hex(b: ByteArray): String = b.joinToString(" ") { String.format("%02X", it.toInt() and 0xFF) }
 
     private val gattCb = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                setStatus("Discovering services…")
-                g.discoverServices()
+                setStatus("Discovering…"); g.requestMtu(185)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 setStatus("Disconnected")
-                runOnUiThread { connectBtn.text = "Connect" }
+                runOnUiThread { connectBtn?.text = "Connect" }
                 main.removeCallbacks(pollRunnable)
             }
         }
 
         @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            val svc = g.getService(SVC)
-            if (svc == null) { setStatus("Charger service not found"); return }
-            writeChar = svc.getCharacteristic(WRITE_CHAR) ?: svc.getCharacteristic(WRITE_CHAR_ALT)
-            val notify = svc.getCharacteristic(NOTIFY_CHAR)
-            if (writeChar == null || notify == null) { setStatus("Characteristics missing"); return }
-            g.setCharacteristicNotification(notify, true)
-            val cccd = notify.getDescriptor(CCCD)
-            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            g.writeDescriptor(cccd)
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+            logln("MTU=$mtu"); g.discoverServices()
         }
 
+        @SuppressLint("MissingPermission")
+        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            val svc = g.getService(SVC)
+            if (svc == null) { setStatus("Service 0xA002 not found"); return }
+            writeNr = svc.getCharacteristic(WRITE_NR)
+            writeWr = svc.getCharacteristic(WRITE_WR)
+            val notify = svc.getCharacteristic(NOTIFY_CHAR)
+            if (notify != null) {
+                g.setCharacteristicNotification(notify, true)
+                val d = notify.getDescriptor(CCCD)
+                d.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                g.writeDescriptor(d)   // chain continues in onDescriptorWrite
+            } else {
+                setStatus("Notify char missing")
+            }
+        }
+
+        @SuppressLint("MissingPermission")
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            setStatus("Connected")
-            runOnUiThread { connectBtn.text = "Disconnect" }
-            main.post(pollRunnable)   // begin polling
+            val parent = d.characteristic.uuid
+            if (parent == NOTIFY_CHAR) {
+                logln("Notify on (status=$status)")
+                // now enable indicate on 0xC306
+                val ind = g.getService(SVC)?.getCharacteristic(INDICATE_CHAR)
+                if (ind != null) {
+                    g.setCharacteristicNotification(ind, true)
+                    val id = ind.getDescriptor(CCCD)
+                    id.value = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                    g.writeDescriptor(id)
+                } else {
+                    ready()
+                }
+            } else if (parent == INDICATE_CHAR) {
+                logln("Indicate on (status=$status)")
+                ready()
+            }
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
-            handleBytes(c.value ?: return)
+            handleRx(c.uuid, c.value ?: return)
         }
 
-        // Android 13+ delivers bytes via this overload
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
-            handleBytes(value)
+            handleRx(c.uuid, value)
+        }
+
+        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
+            // uncomment for very verbose: logln("TX ok ${short(c.uuid)} st=$status")
         }
     }
 
-    private fun handleBytes(bytes: ByteArray) {
-        val frames = reasm.feed(bytes)
-        for ((cmd, payload) in frames) {
+    private fun short(u: UUID): String = u.toString().substring(4, 8).uppercase()
+
+    private fun ready() {
+        setStatus("Connected")
+        runOnUiThread { connectBtn?.text = "Disconnect" }
+        logln("Ready — polling 0x61 to C303")
+        main.post(pollRunnable)
+    }
+
+    private fun handleRx(uuid: UUID, bytes: ByteArray) {
+        logln("RX ${short(uuid)}: ${hex(bytes)}")
+        for ((cmd, payload) in reasm.feed(bytes)) {
             if (cmd == InvtProtocol.CMD_READ_STATUS) {
                 val d = InvtProtocol.parseStatus(payload) ?: continue
-                updateSession(d)
                 showStatus(d)
+            } else {
+                logln("Frame cmd=0x${cmd.toString(16)} len=${payload.size}")
             }
         }
     }
 
     private val pollRunnable = object : Runnable {
-        @SuppressLint("MissingPermission")
         override fun run() {
-            val wc = writeChar; val g = gatt
-            if (wc != null && g != null) {
-                val q = InvtProtocol.statusQuery()
-                if (Build.VERSION.SDK_INT >= 33) {
-                    g.writeCharacteristic(wc, q, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    wc.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                    @Suppress("DEPRECATION") run { wc.value = q; g.writeCharacteristic(wc) }
-                }
-            }
+            writeTo(WRITE_NR, InvtProtocol.statusQuery())
+            pollCount++
             main.postDelayed(this, POLL_MS)
         }
     }
 
+    /** Fire a few exploratory queries to see what the BLE module answers. */
+    private fun probe() {
+        val queries = listOf(
+            "55 06 00 01 52 AA",   // R_ALL_INFO (cmd 1)
+            "55 06 00 06 55 AA",   // R_OTHER_PRAM (cmd 6)
+            "55 07 00 61 00 33 AA" // status (cmd 0x61)
+        )
+        var delay = 0L
+        for (q in queries) {
+            val bytes = q.split(" ").map { it.toInt(16).toByte() }.toByteArray()
+            main.postDelayed({ logln("TX probe: $q"); writeTo(WRITE_NR, bytes) }, delay)
+            delay += 600
+            main.postDelayed({ writeTo(WRITE_WR, bytes) }, delay)
+            delay += 600
+        }
+        toast("Probing — watch the log")
+    }
+
     @SuppressLint("MissingPermission")
-    private fun sendCmd(start: Boolean) {
-        val wc = writeChar; val g = gatt ?: return
-        val f = InvtProtocol.startStop(start)
-        if (wc == null) return
+    private fun writeTo(which: UUID, data: ByteArray) {
+        val g = gatt ?: return
+        val wc = g.getService(SVC)?.getCharacteristic(which) ?: return
+        val type = if (which == WRITE_WR) BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                   else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
         if (Build.VERSION.SDK_INT >= 33) {
-            g.writeCharacteristic(wc, f, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+            g.writeCharacteristic(wc, data, type)
         } else {
-            @Suppress("DEPRECATION") run { wc.value = f; g.writeCharacteristic(wc) }
-        }
-        toast(if (start) "Start sent" else "Stop sent")
-    }
-
-    // ---- session logging ----
-    @Suppress("UNCHECKED_CAST")
-    private fun updateSession(d: InvtProtocol.Status) {
-        if (d.gunStatus == 2) {
-            if (sess == null) {
-                sess = mutableMapOf(
-                    "start" to dayFmt.format(Date()),
-                    "energy" to d.energyKwh, "cost" to d.cost,
-                    "dur" to d.durationMin, "peakP" to d.powerKw, "peakA" to d.current
-                )
-            } else {
-                val s = sess!!
-                s["energy"] = maxOf(s["energy"] as Double, d.energyKwh)
-                s["cost"] = maxOf(s["cost"] as Double, d.cost)
-                s["dur"] = maxOf(s["dur"] as Int, d.durationMin)
-                s["peakP"] = maxOf(s["peakP"] as Double, d.powerKw)
-                s["peakA"] = maxOf(s["peakA"] as Double, d.current)
-            }
-        } else if (sess != null) {
-            val s = sess!!
-            val line = listOf(
-                s["start"], dayFmt.format(Date()), s["dur"],
-                String.format("%.2f", s["energy"]), String.format("%.2f", s["cost"]),
-                String.format("%.1f", s["peakP"]), String.format("%.1f", s["peakA"])
-            ).joinToString(",")
-            writeCsv(line)
-            logln("Session logged: ${s["energy"]} kWh")
-            sess = null
+            @Suppress("DEPRECATION") run { wc.writeType = type; wc.value = data; g.writeCharacteristic(wc) }
         }
     }
 
-    private fun writeCsv(line: String) {
-        try {
-            val f = File(getExternalFilesDir(null), "invt_sessions.csv")
-            if (!f.exists()) f.writeText("start,end,duration_min,energy_kwh,cost,peak_kw,peak_a\n")
-            f.appendText("$line\n")
-        } catch (e: Exception) { logln("CSV error: ${e.message}") }
-    }
+    @SuppressLint("MissingPermission")
+    private fun sendCmd(start: Boolean) = writeTo(WRITE_NR, InvtProtocol.startStop(start))
 
-    // ---- UI helpers ----
     private fun showStatus(d: InvtProtocol.Status) = runOnUiThread {
-        stateBadge.text = "  ${d.gunStatusDesc}  "
-        stateBadge.setBackgroundColor(
+        stateBadge?.text = "  ${d.gunStatusDesc}  "
+        stateBadge?.setBackgroundColor(
             when (d.gunStatus) {
                 2 -> 0xFF1D9E75.toInt(); 4 -> 0xFFE24B4A.toInt()
                 0 -> 0xFF888780.toInt(); else -> 0xFF378ADD.toInt()
             }
         )
-        stateBadge.setTextColor(0xFF0B0D10.toInt())
-        grid.text = buildString {
+        stateBadge?.setTextColor(0xFF0B0D10.toInt())
+        grid?.text = buildString {
             appendLine("Power     : ${"%.1f".format(d.powerKw)} kW")
             appendLine("Energy    : ${"%.2f".format(d.energyKwh)} kWh")
             appendLine("Voltage   : ${"%.1f".format(d.voltage)} V")
             appendLine("Current   : ${"%.1f".format(d.current)} A")
             appendLine("Cost      : ${"%.2f".format(d.cost)}")
             appendLine("Duration  : ${d.durationMin} min")
-            appendLine("Gun       : ${d.gunOrder}   Fault: ${d.faultCode}")
-            appendLine("CP/CC     : ${"%.1f".format(d.cpCcV)} V")
+            appendLine("Gun ${d.gunOrder}  Fault ${d.faultCode}  CP/CC ${"%.1f".format(d.cpCcV)}V")
         }
-        setStatus("Connected · ${fmt.format(Date())}")
+        logln("DECODED ${d.gunStatusDesc} ${d.voltage}V ${d.current}A ${d.powerKw}kW ${d.energyKwh}kWh")
     }
 
-    private fun setStatus(s: String) = runOnUiThread { statusText.text = s }
+    private fun setStatus(s: String) = runOnUiThread { statusText?.text = s }
     private fun toast(s: String) = runOnUiThread { Toast.makeText(this, s, Toast.LENGTH_SHORT).show() }
     private fun logln(s: String) = runOnUiThread {
-        log.text = "${fmt.format(Date())}  $s\n${log.text}".take(2000)
+        log?.text = "${fmt.format(Date())}  $s\n${log?.text}".take(4000)
     }
 
     override fun onDestroy() {
