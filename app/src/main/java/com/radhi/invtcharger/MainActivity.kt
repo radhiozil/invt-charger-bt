@@ -56,6 +56,8 @@ class MainActivity : ComponentActivity() {
     private var grid: TextView? = null
     private var log: TextView? = null
     private var connectBtn: Button? = null
+    private var ssidField: EditText? = null
+    private var pwdField: EditText? = null
 
     private val needPerms: Array<String>
         get() = if (Build.VERSION.SDK_INT >= 31)
@@ -99,10 +101,24 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             addView(startBtn, lp()); addView(stopBtn, lp()); addView(probeBtn, lp())
         }
+        // --- Set WiFi section ---
+        val wifiLabel = TextView(this).apply { text = "Set charger's home WiFi:"; textSize = 13f; setPadding(0, pad, 0, 4) }
+        ssidField = EditText(this).apply { hint = "WiFi name (SSID)" }
+        pwdField = EditText(this).apply { hint = "WiFi password" }
+        val setWifiBtn = Button(this).apply { text = "Set WiFi"; setOnClickListener { setWifi() } }
+        val stationBtn = Button(this).apply { text = "Use WiFi mode"; setOnClickListener { setStationMode() } }
+        val saveBtn = Button(this).apply { text = "Save"; setOnClickListener { saveFlash() } }
+        val wifiRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(setWifiBtn, lp()); addView(stationBtn, lp()); addView(saveBtn, lp())
+        }
+
         log = TextView(this).apply { text = ""; textSize = 12f; setPadding(0, pad, 0, 0) }
 
         col.addView(title); col.addView(statusText); col.addView(connectBtn)
-        col.addView(stateBadge); col.addView(grid); col.addView(btnRow); col.addView(log)
+        col.addView(stateBadge); col.addView(grid); col.addView(btnRow)
+        col.addView(wifiLabel); col.addView(ssidField); col.addView(pwdField); col.addView(wifiRow)
+        col.addView(log)
         root.addView(col)
         return root
     }
@@ -241,11 +257,16 @@ class MainActivity : ComponentActivity() {
     private fun handleRx(uuid: UUID, bytes: ByteArray) {
         logln("RX ${short(uuid)}: ${hex(bytes)}")
         for ((cmd, payload) in reasm.feed(bytes)) {
-            if (cmd == InvtProtocol.CMD_READ_STATUS) {
-                val d = InvtProtocol.parseStatus(payload) ?: continue
-                showStatus(d)
-            } else {
-                logln("Frame cmd=0x${cmd.toString(16)} len=${payload.size}")
+            when (cmd) {
+                InvtProtocol.CMD_READ_STATUS -> {
+                    val d = InvtProtocol.parseStatus(payload)
+                    if (d != null) showStatus(d)
+                }
+                0x10, 0x11, 0x31, 0x53 -> {
+                    val ok = payload.isNotEmpty() && payload[0] == 0
+                    logln(">>> ACK cmd=0x${cmd.toString(16)}: ${if (ok) "SUCCESS" else "fail/${payload.joinToString(",")}"}")
+                }
+                else -> logln("Frame cmd=0x${cmd.toString(16)} len=${payload.size}")
             }
         }
     }
@@ -281,6 +302,35 @@ class MainActivity : ComponentActivity() {
         val s = q7(0x61)
         main.postDelayed({ logln("TX cmd=0x61 (len7)"); writeTo(WRITE_NR, s) }, delay)
         toast("Sweeping commands — watch the log")
+    }
+
+    /** W_HOTSPOT_DATA (0x10): tell the charger which WiFi (SSID+password) to join. */
+    private fun setWifi() {
+        val ssid = ssidField?.text?.toString() ?: ""
+        val pwd = pwdField?.text?.toString() ?: ""
+        if (ssid.isEmpty()) { toast("Enter WiFi name"); return }
+        val f = IntArray(70)
+        f[0] = 0x55; f[1] = 0x46; f[2] = 0x00; f[3] = 0x10   // len=70, cmd=0x10
+        for (n in 0 until 32) f[4 + n] = if (n < ssid.length) ssid[n].code and 0xFF else 0
+        for (n in 0 until 32) f[36 + n] = if (n < pwd.length) pwd[n].code and 0xFF else 0
+        f[68] = xor(f.copyOfRange(0, 68)); f[69] = 0xAA
+        logln("TX Set WiFi: SSID='$ssid'")
+        writeTo(WRITE_WR, f.map { it.toByte() }.toByteArray())
+    }
+
+    /** W_OFFLINE_CHARGE_FUN (0x31) = 0 → charger joins the configured WiFi (station mode). */
+    private fun setStationMode() {
+        val f = intArrayOf(0x55, 0x07, 0x00, 0x31, 0x00); val x = xor(f)
+        val frame = (f + intArrayOf(x, 0xAA)).map { it.toByte() }.toByteArray()
+        logln("TX Use-WiFi mode (offline-charge=0)")
+        writeTo(WRITE_WR, frame)
+    }
+
+    /** W_PARAM_TO_FLASH (0x53): persist settings. */
+    private fun saveFlash() {
+        val frame = q6(0x53)
+        logln("TX Save to flash")
+        writeTo(WRITE_WR, frame)
     }
 
     @SuppressLint("MissingPermission")
