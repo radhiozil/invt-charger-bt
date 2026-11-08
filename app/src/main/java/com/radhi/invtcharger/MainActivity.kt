@@ -315,7 +315,7 @@ class MainActivity : ComponentActivity() {
         for (n in 0 until 32) f[36 + n] = if (n < pwd.length) pwd[n].code and 0xFF else 0
         f[68] = xor(f.copyOfRange(0, 68)); f[69] = 0xAA
         logln("TX Set WiFi: SSID='$ssid'")
-        writeTo(WRITE_WR, f.map { it.toByte() }.toByteArray())
+        writeTo(WRITE_NR, f.map { it.toByte() }.toByteArray())
     }
 
     /** W_OFFLINE_CHARGE_FUN (0x31) = 0 → charger joins the configured WiFi (station mode). */
@@ -323,14 +323,14 @@ class MainActivity : ComponentActivity() {
         val f = intArrayOf(0x55, 0x07, 0x00, 0x31, 0x00); val x = xor(f)
         val frame = (f + intArrayOf(x, 0xAA)).map { it.toByte() }.toByteArray()
         logln("TX Use-WiFi mode (offline-charge=0)")
-        writeTo(WRITE_WR, frame)
+        writeTo(WRITE_NR, frame)
     }
 
     /** W_PARAM_TO_FLASH (0x53): persist settings. */
     private fun saveFlash() {
         val frame = q6(0x53)
         logln("TX Save to flash")
-        writeTo(WRITE_WR, frame)
+        writeTo(WRITE_NR, frame)
     }
 
     @SuppressLint("MissingPermission")
