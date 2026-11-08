@@ -234,8 +234,8 @@ class MainActivity : ComponentActivity() {
     private fun ready() {
         setStatus("Connected")
         runOnUiThread { connectBtn?.text = "Disconnect" }
-        logln("Ready — polling 0x61 to C303")
-        main.post(pollRunnable)
+        logln("Ready — tap PROBE to sweep commands")
+        // No auto-poll: we first want to see if there are unsolicited heartbeats.
     }
 
     private fun handleRx(uuid: UUID, bytes: ByteArray) {
@@ -258,22 +258,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Fire a few exploratory queries to see what the BLE module answers. */
+    private fun xor(b: IntArray): Int { var x = 0; for (v in b) x = x xor (v and 0xFF); return x and 0xFF }
+    private fun q6(cmd: Int): ByteArray {
+        val f = intArrayOf(0x55, 0x06, 0x00, cmd); val x = xor(f)
+        return (f + intArrayOf(x, 0xAA)).map { it.toByte() }.toByteArray()
+    }
+    private fun q7(cmd: Int): ByteArray {   // query with one 0x00 data byte (status style)
+        val f = intArrayOf(0x55, 0x07, 0x00, cmd, 0x00); val x = xor(f)
+        return (f + intArrayOf(x, 0xAA)).map { it.toByte() }.toByteArray()
+    }
+
+    /** Sweep every read command code one at a time so we can see which returns data. */
     private fun probe() {
-        val queries = listOf(
-            "55 06 00 01 52 AA",   // R_ALL_INFO (cmd 1)
-            "55 06 00 06 55 AA",   // R_OTHER_PRAM (cmd 6)
-            "55 07 00 61 00 33 AA" // status (cmd 0x61)
-        )
+        val cmds = listOf(0x01, 0x02, 0x04, 0x05, 0x06, 0x08, 0x60, 0x61)
         var delay = 0L
-        for (q in queries) {
-            val bytes = q.split(" ").map { it.toInt(16).toByte() }.toByteArray()
-            main.postDelayed({ logln("TX probe: $q"); writeTo(WRITE_NR, bytes) }, delay)
-            delay += 600
-            main.postDelayed({ writeTo(WRITE_WR, bytes) }, delay)
-            delay += 600
+        for (c in cmds) {
+            val f6 = q6(c)
+            main.postDelayed({ logln("TX cmd=0x${c.toString(16)}"); writeTo(WRITE_NR, f6) }, delay)
+            delay += 900
         }
-        toast("Probing — watch the log")
+        // status-style (len 7) for 0x61 as well
+        val s = q7(0x61)
+        main.postDelayed({ logln("TX cmd=0x61 (len7)"); writeTo(WRITE_NR, s) }, delay)
+        toast("Sweeping commands — watch the log")
     }
 
     @SuppressLint("MissingPermission")
