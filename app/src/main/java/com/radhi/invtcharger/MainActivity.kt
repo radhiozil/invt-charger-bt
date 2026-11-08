@@ -120,7 +120,7 @@ class MainActivity : ComponentActivity() {
         else ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
     }
 
-    override fun onRequestPermissionsResult(rc: Int, p: Array<out String>, r: IntArray) {
+    override fun onRequestPermissionsResult(rc: Int, p: Array<String>, r: IntArray) {
         super.onRequestPermissionsResult(rc, p, r)
         logln(if (r.all { it == PackageManager.PERMISSION_GRANTED }) "Permissions granted" else "Permissions denied — app needs Bluetooth")
     }
