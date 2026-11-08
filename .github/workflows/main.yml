@@ -18,11 +18,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Build debug APK
         run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
           gradle wrapper --gradle-version 8.9 --no-daemon
           ./gradlew assembleDebug --no-daemon --stacktrace
 
