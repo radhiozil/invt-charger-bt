@@ -519,7 +519,7 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
-    private fun renderHistory() = runOnUiThread {
+    private fun renderHistory(): Unit = runOnUiThread {
         val list = histList ?: return@runOnUiThread
         list.removeAllViews()
         val all = loadRecords().filter { it.startEpochSec > 0 && it.totalKwh > 0 }
