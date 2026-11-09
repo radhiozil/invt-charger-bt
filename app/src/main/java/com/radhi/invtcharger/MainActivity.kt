@@ -2,6 +2,7 @@ package com.radhi.invtcharger
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.bluetooth.*
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -18,6 +19,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -86,6 +88,7 @@ class MainActivity : ComponentActivity() {
     private var histList: LinearLayout? = null
     private var histStatus: TextView? = null
     private var chartMode = 1   // 0=week, 1=month, 2=year
+    private var selectedBucketKey: Long? = null   // tapped bar -> filter the list to this bucket
     private var chart: BarChartView? = null
     private var chartTotal: TextView? = null
     private var wkBtn: TextView? = null; private var moBtn: TextView? = null; private var yrBtn: TextView? = null
@@ -97,6 +100,7 @@ class MainActivity : ComponentActivity() {
     private var pendingTotal: Int = 0
     private var pulling = false
     private var lastChargingStatus = -1
+    private var ratePerKwh = 0.0   // RM per kWh; 0 = use the charger's own cost figure
 
     private val needPerms: Array<String>
         get() = if (Build.VERSION.SDK_INT >= 31)
@@ -108,6 +112,7 @@ class MainActivity : ComponentActivity() {
         dens = resources.displayMetrics.density
         val mgr = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         btAdapter = mgr.adapter
+        ratePerKwh = loadRate()
         setContentView(buildUi())
         renderHistory()
         requestPermsThen {}
@@ -163,6 +168,8 @@ class MainActivity : ComponentActivity() {
         }
         titleCol.addView(chip)
         header.addView(titleCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val gear = pill("⚙", cCard2, cFg).apply { setOnClickListener { showRateDialog() } }
+        header.addView(gear, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { rightMargin = dp(8) })
         connectBtn = pill("Connect", cAccent, cBg).apply { setOnClickListener { if (gatt == null) startScan() else disconnect() } }
         header.addView(connectBtn)
         root.addView(header, mv(0, 18))
@@ -248,9 +255,9 @@ class MainActivity : ComponentActivity() {
             background = GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(cCard2) }
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-        wkBtn = seg("Weekly") { chartMode = 0; renderChart() }
-        moBtn = seg("Monthly") { chartMode = 1; renderChart() }
-        yrBtn = seg("Yearly") { chartMode = 2; renderChart() }
+        wkBtn = seg("Weekly") { chartMode = 0; selectedBucketKey = null; renderHistory() }
+        moBtn = seg("Monthly") { chartMode = 1; selectedBucketKey = null; renderHistory() }
+        yrBtn = seg("Yearly") { chartMode = 2; selectedBucketKey = null; renderHistory() }
         segBar.addView(wkBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         segBar.addView(moBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         segBar.addView(yrBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
@@ -258,8 +265,11 @@ class MainActivity : ComponentActivity() {
         chartTotal = value("—", cAccent, 22f)
         chartCard.addView(chartTotal)
         chartCard.addView(lbl("kWh in view", cMuted, 10f))
-        chart = BarChartView(this)
+        chart = BarChartView(this).apply {
+            onBarTap = { key -> selectedBucketKey = if (selectedBucketKey == key) null else key; renderHistory() }
+        }
         chartCard.addView(chart, LinearLayout.LayoutParams(MATCH_PARENT, dp(170)).apply { topMargin = dp(10) })
+        chartCard.addView(lbl("Tap a bar to see that period's sessions", cMuted, 10f).apply { setPadding(0, dp(8), 0, 0) })
         histPane!!.addView(chartCard, mv(0, 14))
 
         histList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -414,7 +424,7 @@ class MainActivity : ComponentActivity() {
         vA?.text = "%.1f A".format(d.current)
         vKw?.text = "%.1f kW".format(d.powerKw)
         vDur?.text = "${d.durationMin} min"
-        vCost?.text = "%.2f".format(d.cost)
+        vCost?.text = fmtMoney(costOf(d.sessionKwh, d.cost))
         vFault?.text = d.fault.toString()
         vFault?.setTextColor(if (d.fault != 0) cRed else cFg)
         updated?.text = "Updated ${tFmt.format(Date())}"
@@ -512,22 +522,48 @@ class MainActivity : ComponentActivity() {
     private fun renderHistory() = runOnUiThread {
         val list = histList ?: return@runOnUiThread
         list.removeAllViews()
-        val recs = loadRecords().sortedByDescending { it.startEpochSec }
-        if (recs.isEmpty()) {
+        val all = loadRecords().filter { it.startEpochSec > 0 && it.totalKwh > 0 }
+        if (all.isEmpty()) {
             val empty = card(cCard)
             empty.addView(lbl("No records yet", cMuted, 13f, false))
             val hint = TextView(this).apply { text = "Connect and tap Refresh to pull the charger's stored sessions. New sessions are logged automatically."; setTextColor(cMuted); textSize = 12f; setPadding(0, dp(6), 0, 0) }
             empty.addView(hint)
             list.addView(empty); renderChart(); return@runOnUiThread
         }
-        // summary
-        val totalKwh = recs.sumOf { it.totalKwh }
+
+        val sel = selectedBucketKey
+        val shown = (if (sel == null) all else all.filter { bucketOf(chartMode, it.startEpochSec).first == sel })
+            .sortedByDescending { it.startEpochSec }
+
+        // filter chip when a bar is selected
+        if (sel != null) {
+            val label = all.firstOrNull { bucketOf(chartMode, it.startEpochSec).first == sel }
+                ?.let { bucketOf(chartMode, it.startEpochSec).second } ?: "Selected period"
+            val chipCard = card(cCard2, 14).apply { setPadding(dp(14), dp(10), dp(14), dp(10)) }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            row.addView(TextView(this).apply {
+                text = label; setTextColor(cFg); textSize = 13.5f; setTypeface(typeface, Typeface.BOLD)
+            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            row.addView(TextView(this).apply {
+                text = "✕ Clear"; setTextColor(cBlue); textSize = 13f; setTypeface(typeface, Typeface.BOLD)
+                setOnClickListener { selectedBucketKey = null; renderHistory() }
+            })
+            chipCard.addView(row)
+            list.addView(chipCard, mv(0, 12))
+        }
+
+        // summary (reflects the shown set)
+        val totalKwh = shown.sumOf { it.totalKwh }
         val sum = card(cCard)
-        sum.addView(lbl("${recs.size} sessions · total energy"))
+        sum.addView(lbl("${shown.size} session${if (shown.size == 1) "" else "s"} · total energy"))
         sum.addView(value("%.2f kWh".format(totalKwh), cAccent, 26f).apply { setPadding(0, dp(3), 0, 0) })
+        if (ratePerKwh > 0) sum.addView(TextView(this).apply {
+            text = "≈ ${fmtMoney(totalKwh * ratePerKwh)}  ·  ${fmtMoney(ratePerKwh)}/kWh"
+            setTextColor(cMuted); textSize = 12.5f; setPadding(0, dp(6), 0, 0)
+        })
         list.addView(sum, mv(0, 12))
 
-        for (r in recs) list.addView(recordCard(r), mv(0, 10))
+        for (r in shown) list.addView(recordCard(r), mv(0, 10))
         renderChart()
     }
 
@@ -543,92 +579,123 @@ class MainActivity : ComponentActivity() {
         yrBtn?.setTextColor(if (chartMode == 2) cFg else cMuted)
 
         val data = bucketData(chartMode)
-        chart?.setData(data)
-        chartTotal?.text = "%.2f".format(data.sumOf { it.second })
+        chart?.setData(data, selectedBucketKey)
+        chartTotal?.text = "%.2f".format(data.sumOf { it.third })
     }
 
-    /** Aggregate stored sessions into chart buckets (newest at the right). */
-    private fun bucketData(mode: Int): List<Pair<String, Double>> {
+    /** Which chart bucket a session falls in: (sortable key, display label). */
+    private fun bucketOf(mode: Int, epochSec: Long): Pair<Long, String> {
+        val c = Calendar.getInstance()
+        c.timeInMillis = epochSec * 1000L
+        return when (mode) {
+            0 -> {
+                c.firstDayOfWeek = Calendar.MONDAY
+                c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
+                c.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
+                (c.timeInMillis / 1000L) to ("Week of " + SimpleDateFormat("d MMM", Locale.US).format(c.time))
+            }
+            1 -> {
+                val y = c.get(Calendar.YEAR); val m = c.get(Calendar.MONTH)
+                (y * 12L + m) to SimpleDateFormat("MMMM yyyy", Locale.US).format(c.time)
+            }
+            else -> { val y = c.get(Calendar.YEAR); y.toLong() to y.toString() }
+        }
+    }
+
+    /** Short x-axis label for a bucket (compact form of bucketOf's label). */
+    private fun bucketTick(mode: Int, epochSec: Long): String {
+        val c = Calendar.getInstance(); c.timeInMillis = epochSec * 1000L
+        return when (mode) {
+            0 -> SimpleDateFormat("d/M", Locale.US).format(c.time)
+            1 -> SimpleDateFormat("MMM ''yy", Locale.US).format(c.time)
+            else -> c.get(Calendar.YEAR).toString()
+        }
+    }
+
+    /** Aggregate stored sessions into chart buckets (newest at the right): (key, tick label, kWh). */
+    private fun bucketData(mode: Int): List<Triple<Long, String, Double>> {
         val recs = loadRecords().filter { it.startEpochSec > 0 && it.totalKwh > 0 }
         if (recs.isEmpty()) return emptyList()
         val sum = java.util.TreeMap<Long, Double>()
-        val label = HashMap<Long, String>()
+        val tick = HashMap<Long, String>()
         for (r in recs) {
-            val c = Calendar.getInstance()
-            c.timeInMillis = r.startEpochSec * 1000L
-            val key: Long; val lab: String
-            when (mode) {
-                0 -> {
-                    c.firstDayOfWeek = Calendar.MONDAY
-                    c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
-                    c.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                    key = c.timeInMillis / 1000L
-                    lab = SimpleDateFormat("d/M", Locale.US).format(c.time)
-                }
-                1 -> {
-                    val y = c.get(Calendar.YEAR); val m = c.get(Calendar.MONTH)
-                    key = y * 12L + m
-                    lab = SimpleDateFormat("MMM ''yy", Locale.US).format(c.time)   // e.g. Aug '25
-                }
-                else -> {
-                    val y = c.get(Calendar.YEAR); key = y.toLong(); lab = y.toString()
-                }
-            }
+            val key = bucketOf(mode, r.startEpochSec).first
             sum[key] = (sum[key] ?: 0.0) + r.totalKwh
-            label[key] = lab
+            tick[key] = bucketTick(mode, r.startEpochSec)
         }
         var entries = sum.entries.toList()            // ascending by key
         val cap = when (mode) { 0 -> 8; 1 -> 12; else -> 6 }
         if (entries.size > cap) entries = entries.takeLast(cap)
-        return entries.map { (label[it.key] ?: "") to it.value }
+        return entries.map { Triple(it.key, tick[it.key] ?: "", it.value) }
     }
 
-    /** Simple theme-aware bar chart; no external libraries. */
+    /** Simple theme-aware, tappable bar chart; no external libraries. */
     inner class BarChartView(c: Context) : View(c) {
-        private var data: List<Pair<String, Double>> = emptyList()
+        private var data: List<Triple<Long, String, Double>> = emptyList()
+        private var selectedKey: Long? = null
+        var onBarTap: ((Long) -> Unit)? = null
         private val bar = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cAccent }
+        private val barSel = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cBlue }
         private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cCard2 }
+        private val trackSel = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF243042.toInt() }
         private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cMuted; textAlign = Paint.Align.CENTER }
         private val valTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cFg; textAlign = Paint.Align.CENTER }
-        fun setData(d: List<Pair<String, Double>>) { data = d; invalidate() }
+        // layout cached from onDraw for hit-testing
+        private var lastGap = 0f; private var lastBarW = 0f
+
+        init { isClickable = true }
+
+        fun setData(d: List<Triple<Long, String, Double>>, selKey: Long?) { data = d; selectedKey = selKey; invalidate() }
+
         override fun onDraw(canvas: Canvas) {
             val w = width.toFloat(); val h = height.toFloat()
             txt.textSize = 9f * dens; valTxt.textSize = 9f * dens
             if (data.isEmpty()) {
-                txt.textAlign = Paint.Align.CENTER
                 canvas.drawText("No data yet", w / 2f, h / 2f, txt)
                 return
             }
-            val maxV = data.maxOf { it.second }.coerceAtLeast(0.001)
+            val maxV = data.maxOf { it.third }.coerceAtLeast(0.001)
             val n = data.size
             val padBottom = dp(20).toFloat(); val padTop = dp(16).toFloat()
             val gap = dp(8).toFloat()
             val barW = ((w - gap * (n + 1)) / n).coerceAtLeast(dp(4).toFloat())
+            lastGap = gap; lastBarW = barW
             // shrink x-axis labels so the widest one fits its slot
-            txt.textSize = 9f * dens
             val slot = barW + gap
-            val widest = data.maxOf { txt.measureText(it.first) }
+            val widest = data.maxOf { txt.measureText(it.second) }
             if (widest > slot * 0.95f) txt.textSize = (9f * dens * (slot * 0.95f / widest)).coerceAtLeast(6.5f * dens)
             val base = h - padBottom
             val usable = base - padTop
             for (i in data.indices) {
-                val (lab, v) = data[i]
+                val (key, lab, v) = data[i]
+                val selected = key == selectedKey
                 val left = gap + i * (barW + gap)
                 val right = left + barW
                 val cx = (left + right) / 2f
-                // track
-                canvas.drawRoundRect(RectF(left, padTop, right, base), dp(4).toFloat(), dp(4).toFloat(), track)
-                // bar
+                canvas.drawRoundRect(RectF(left, padTop, right, base), dp(4).toFloat(), dp(4).toFloat(), if (selected) trackSel else track)
                 val barH = (usable * (v / maxV)).toFloat()
                 val top = base - barH
-                canvas.drawRoundRect(RectF(left, top, right, base), dp(4).toFloat(), dp(4).toFloat(), bar)
-                // value above
+                canvas.drawRoundRect(RectF(left, top, right, base), dp(4).toFloat(), dp(4).toFloat(), if (selected) barSel else bar)
+                valTxt.color = if (selected) cBlue else cFg
                 val vs = if (v >= 100) "%.0f".format(v) else "%.1f".format(v)
                 canvas.drawText(vs, cx, (top - dp(4)).coerceAtLeast(padTop - dp(4).toFloat()), valTxt)
-                // x label
+                txt.color = if (selected) cFg else cMuted
                 canvas.drawText(lab, cx, h - dp(5), txt)
+                txt.color = cMuted
             }
         }
+
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            if (e.action == MotionEvent.ACTION_UP && data.isNotEmpty() && lastBarW > 0f) {
+                val slot = lastBarW + lastGap
+                var i = ((e.x - lastGap) / slot).toInt()
+                if (i < 0) i = 0; if (i >= data.size) i = data.size - 1
+                onBarTap?.invoke(data[i].first)
+                performClick()
+            }
+            return true
+        }
+        override fun performClick(): Boolean { super.performClick(); return true }
     }
 
     private fun recordCard(r: InvtProtocol.Record): View {
@@ -649,12 +716,57 @@ class MainActivity : ComponentActivity() {
         kwh.addView(lbl("kWh", cMuted, 10f))
         top.addView(kwh)
         c.addView(top)
-        if (r.totalFee > 0) {
+        val cost = costOf(r.totalKwh, r.totalFee)
+        if (cost > 0) {
             c.addView(TextView(this).apply {
-                text = "Cost  %.2f".format(r.totalFee); setTextColor(cMuted); textSize = 12f; setPadding(0, dp(8), 0, 0)
+                text = "Cost  " + fmtMoney(cost); setTextColor(cMuted); textSize = 12f; setPadding(0, dp(8), 0, 0)
             })
         }
         return c
+    }
+
+    // ---------- cost / rate ----------
+    private fun loadRate(): Double = try {
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).getFloat("rate", 0f).toDouble()
+    } catch (_: Exception) { 0.0 }
+
+    private fun saveRate(v: Double) {
+        try { getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putFloat("rate", v.toFloat()).apply() } catch (_: Exception) {}
+    }
+
+    /** Cost from the user's tariff when set, otherwise the charger's own figure. */
+    private fun costOf(kwh: Double, fallback: Double): Double = if (ratePerKwh > 0) kwh * ratePerKwh else fallback
+    private fun fmtMoney(v: Double): String = "RM %.2f".format(v)
+
+    private fun showRateDialog() {
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+            hint = "e.g. 0.57"
+            if (ratePerKwh > 0) setText("%.2f".format(ratePerKwh))
+            setTextColor(cFg); setHintTextColor(cMuted)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(8), dp(22), 0)
+        }
+        box.addView(TextView(this).apply {
+            text = "Cost per kWh (RM). Leave empty to use the charger's own figure."
+            setTextColor(cMuted); textSize = 13f; setPadding(0, 0, 0, dp(10))
+        })
+        box.addView(input)
+        AlertDialog.Builder(this)
+            .setTitle("Electricity rate")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val v = input.text.toString().trim().toDoubleOrNull() ?: 0.0
+                ratePerKwh = if (v > 0) v else 0.0
+                saveRate(ratePerKwh)
+                renderHistory()
+                toast(if (ratePerKwh > 0) "Rate set to ${fmtMoney(ratePerKwh)}/kWh" else "Using charger's cost")
+            }
+            .setNeutralButton("Clear") { _, _ -> ratePerKwh = 0.0; saveRate(0.0); renderHistory(); toast("Rate cleared") }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     // ---------- misc ----------
