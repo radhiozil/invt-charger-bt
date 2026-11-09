@@ -1,109 +1,151 @@
-# INVT EV Charger — Bluetooth tracker (Android, phone-only build)
+# INVT Charger (BT)
 
-A small Android app that connects to your INVT EVC16 charger over **Bluetooth
-(BLE)**, shows live charging status, and logs each session to a CSV file.
-No INVT cloud account, no WiFi needed — it talks straight to the charger.
+A small Android app that talks to an **INVT EVC16 7 kW home EV wallbox** directly over **Bluetooth Low Energy (BLE)** — no cloud account, no internet. It reads live charging data, pulls the charger's own stored session history, charts it, auto-logs sessions, and costs them at your own electricity tariff.
 
-Confirmed working against charger `3UC243403423`:
-- write status query `55 07 00 61 00 33 AA` to characteristic **0xC303**
-- receive replies on NOTIFY characteristic **0xC305**
-- same `0x55…0xAA` frame protocol as the WiFi local mode.
-
-You have **no PC**, so the app is compiled **in the cloud by GitHub Actions**.
-You push these files to a free GitHub repo, GitHub builds the APK, you download
-and install it. ~15 minutes, all from your phone.
+Built because the official INVT Charge app's cloud server was unreachable and the older app wouldn't run on modern Android. This app speaks the charger's native BLE protocol directly.
 
 ---
 
-## Step 1 — Make a GitHub account (if you don't have one)
-Go to https://github.com and sign up (free). Verify your email.
+## Features
 
-## Step 2 — Create a new repository
-1. Top-right **+** → **New repository**.
-2. Name it e.g. `invt-charger-bt`.
-3. Set it **Private** (your choice) and tick **Add a README** so the repo isn't empty.
-4. **Create repository.**
+- **Live tab** — real-time status while a car is plugged in: charging state, lifetime meter total (kWh), this-session kWh, voltage, current, power, duration, cost, fault code. Start/Stop controls.
+- **History tab** — pulls the charger's stored charge records over BLE (date, kWh, duration, gun, fees) and keeps a permanent copy on the phone.
+- **Charts** — kWh bars by **Weekly** (calendar week, Mon start), **Monthly**, or **Yearly**. Tap any bar to filter the list to that period; a chip shows the selected period with a **Clear** button.
+- **Auto-log** — records are pulled automatically on connect and merged (deduplicated by start time), so history survives even after the charger recycles old entries. A session that finishes while the app is open is also logged on the spot.
+- **Cost settings (⚙)** — set your electricity rate (RM/kWh); cost is then computed as `kWh × rate` on the Live tab, on every record, and as a period total in the summary.
+- **Offline & private** — everything happens over BLE and local storage. No account, no network calls.
 
-## Step 3 — Upload these project files
-The whole folder structure matters, so upload keeping the paths intact.
+---
 
-Easiest from a phone:
-1. On the repo page, tap **Add file → Upload files**.
-2. GitHub's web uploader lets you pick multiple files. Upload them **preserving
-   folders** — if the uploader flattens them, use the method below instead.
+## Install
 
-If the web uploader won't keep folders, use the GitHub mobile app or create each
-file by hand (**Add file → Create new file**, then type the path like
-`app/src/main/java/com/radhi/invtcharger/MainActivity.kt` — GitHub makes the
-folders as you type the `/`). The files you need, with their exact paths:
+The app is built in the cloud by GitHub Actions and sideloaded.
+
+1. On GitHub: **Actions → latest successful run → Artifacts → download the APK** (or the APK your workflow produces).
+2. On the phone, open the downloaded `.apk` with the **system installer** (Files app → tap the APK). Do **not** use a third-party split-APK installer — this is a single APK.
+3. If you see **`INSTALL_FAILED_VERIFICATION_FAILURE`**: that's Google Play Protect. Open **Play Store → profile → Play Protect → ⚙ Settings → turn off "Scan apps with Play Protect"**, install, then turn it back on. (Toggling Airplane mode during install also works.)
+4. Grant **Bluetooth / Nearby devices** permission when asked.
+
+> Builds from Actions all use the same debug signing key, so each new build upgrades the previous install cleanly. If you ever installed from a different source, uninstall the old copy first.
+
+---
+
+## How to use
+
+1. Make sure the car-side app connection is free (the charger allows one BLE client at a time).
+2. Tap **Connect** → the app scans for the charger (BLE name starts with `3UC`), handshakes, and starts polling.
+3. **Live tab**: watch real-time values. **Start/Stop** send charge commands.
+4. **History tab**: tap **↻ Refresh** (or just connecting auto-pulls) to sync stored sessions. Switch **Weekly / Monthly / Yearly**; tap a bar to drill into one period; **Clear** to reset.
+5. **⚙ (gear)**: enter your RM/kWh rate. Leave empty / **Clear** to fall back to the charger's own cost figure.
+
+---
+
+## Build (GitHub Actions)
+
+This repo builds in the cloud — no local Android SDK needed.
+
+- Workflow: `.github/workflows/main.yml` — runs on push, uses JDK 17 and `./gradlew assembleDebug` on the preinstalled Android SDK, and uploads the debug APK as a build artifact.
+- To change the app: edit the Kotlin/XML files on GitHub (web editor or upload), commit to `main`, and Actions rebuilds automatically. Download the new APK from the run's Artifacts.
+
+**If a build fails:** open the failed run → **build** job → **Build debug APK** step → search the log for `.kt:` (Kotlin error with file:line) or `error:` (resource/AAPT error). That line names the exact problem.
+
+### Project layout
 
 ```
-build.gradle
-settings.gradle
-gradle.properties
-.gitignore
-.github/workflows/build.yml
-app/build.gradle
-app/src/main/AndroidManifest.xml
-app/src/main/java/com/radhi/invtcharger/InvtProtocol.kt
-app/src/main/java/com/radhi/invtcharger/MainActivity.kt
+app/src/main/
+├─ AndroidManifest.xml            # permissions, launcher icon, dark theme
+├─ java/com/radhi/invtcharger/
+│  ├─ MainActivity.kt             # UI, BLE connection, history, charts, settings
+│  └─ InvtProtocol.kt             # BLE frame encode/decode + parsers
+└─ res/
+   ├─ values/colors.xml           # launcher background colour
+   ├─ drawable/ic_launcher_foreground.xml
+   └─ mipmap-anydpi-v26/…         # adaptive launcher icon
 ```
 
-(The `gradle/wrapper/gradle-wrapper.properties` is optional — the build
-generates the wrapper itself.)
+No external UI libraries — the interface and charts are drawn in code to keep the build lightweight and dependency-free.
 
-Commit the uploads (**Commit changes**).
+---
 
-## Step 4 — Let GitHub build it
-1. As soon as you commit to the `main` branch, the build starts automatically.
-   (Or go to the **Actions** tab → **Build APK** → **Run workflow**.)
-2. Open the **Actions** tab. You'll see a run called **Build APK** with a spinner.
-3. Wait ~3–6 minutes for it to finish with a green check.
-4. If it fails (red X): open the run, tap the failed step, copy the error, and
-   send it to me — I'll fix it. First builds sometimes need a small tweak.
+## BLE protocol reference
 
-## Step 5 — Download the APK
-1. Open the finished (green) run in the **Actions** tab.
-2. Scroll down to **Artifacts**.
-3. Tap **invt-charger-bt-apk** to download a `.zip`.
-4. On your phone, open the zip and extract **app-debug.apk**.
+Reverse-engineered from the INVT Charge iOS app (v2.4.2). Documented here so future changes don't require re-deriving it.
 
-## Step 6 — Install the APK
-1. Tap `app-debug.apk`. Android will ask to allow installing from this source —
-   **Allow**.
-2. Install it. It appears as **INVT Charger BT**.
+**GATT**
+- Service `0xA002`
+- Write (commands) → characteristic `0xC304`
+- Notify (replies) ← characteristic `0xC305`
+- Negotiate MTU ~185, enable notifications on `0xC305`, then handshake.
 
-## Step 7 — Use it
-1. Open **INVT Charger BT**.
-2. It asks for **Bluetooth** (and on older Android, Location) permission — **Allow**.
-   (Location permission is required by Android for BLE scanning; the app doesn't
-   use your location.)
-3. Make sure the charger is powered and **not currently connected in another app**
-   (nRF Connect, the INVT app) — BLE allows one connection at a time. Disconnect
-   those first.
-4. Tap **Connect**. It scans for a device whose name starts with `3UC`, connects,
-   and starts polling.
-5. Live values appear: state, power, energy, voltage, current, cost, duration.
-6. Each charging session is saved to a CSV at:
-   `Android/data/com.radhi.invtcharger/files/invt_sessions.csv`
-   (reachable with a file manager; or we can add an in-app export later).
+**Frame format** (little-endian throughout)
+
+```
+0x55 | lenLo | lenHi | protocolVersion(0x01) | cmd | payload… | xor | 0xAA
+```
+- `len` = total frame length (bytes 1–2).
+- `cmd` is at **byte 4** (byte 3 is the protocol version).
+- `xor` = XOR of every byte before it.
+
+**Flow:** send handshake (cmd 0) once, then poll status (cmd 1). History is pulled with cmd 16 then cmd 17 over the same connection.
+
+**Commands**
+
+| cmd | name | query payload |
+|----:|------|---------------|
+| 0 | HANDSHAKE | unix time (LE32 sec) + timezone `[sign, hours, mins]` |
+| 1 | STATUS | `[0x00]` |
+| 19 | START/STOP | `[1]` start / `[0]` stop |
+| 16 | RECORDS_COUNT | `[0x00]` → reply = LE16 count |
+| 17 | RECORDS_DATA | LE16 index → reply = one record |
+
+**Status reply** (payload from byte 5; needs ≥ 28 bytes)
+
+| offset | field |
+|-------:|-------|
+| 2–5 | lifetime capacity, LE32 /100 → kWh |
+| 7 | charging status (0 idle, 1 connected, 2 charging, 3 finished, 4 fault) |
+| 9 | fault code |
+| 10–11 | voltage, LE16 /10 |
+| 12–13 | current, LE16 /10 |
+| 14–17 | session kWh, LE32 /100 |
+| 18–21 | session cost, LE32 /100 |
+| 22–23 | duration (min), LE16 |
+| 24–25 | power, LE16 /10 |
+
+**Record reply** (payload from byte 5; needs ≥ 43 bytes)
+
+| offset | field |
+|-------:|-------|
+| 0–1 | record index, LE16 |
+| 2 | gun (0=A, 1=B) |
+| 3–6 | start time, LE32 unix sec |
+| 7–10 | total kWh, LE32 /100 |
+| 31–34 | electricity fee, LE32 /100 |
+| 35–38 | service fee, LE32 /100 |
+| 39–40 | duration (min), LE16 |
+| 41 | stop reason |
+| 42 | fault code |
+
+> The charger stores records in a fixed ring buffer and overwrites the oldest when full, which is why the app keeps its own deduplicated copy on the phone.
 
 ---
 
 ## Troubleshooting
-- **"Charger service not found"** — the charger exposes service 0xA002; if this
-  shows, the device connected isn't the charger or its name doesn't start `3UC`.
-  Tell me the exact advertised name and I'll adjust the filter.
-- **Connects then disconnects** — another app holds the BLE link. Close nRF
-  Connect / INVT app, toggle Bluetooth off/on, try again.
-- **Values look wrong** (e.g. cost scaled oddly) — send me a screenshot; every
-  field's scaling is known and quick to adjust.
-- **Reply only shows short data** — the app reassembles BLE fragments
-  automatically, so it won't have the `39 AA` problem nRF had by hand.
 
-## What each file does
-- `InvtProtocol.kt` — builds the status-query frame, decodes replies, reassembles
-  BLE fragments. Pure logic, already verified.
-- `MainActivity.kt` — the BLE connection, polling loop, live UI, CSV logging.
-- `build.gradle` / `settings.gradle` / `app/build.gradle` — Gradle project setup.
-- `.github/workflows/build.yml` — the cloud build that produces the APK.
+| Symptom | Fix |
+|---------|-----|
+| Won't find the charger | Charger must be powered and not already connected to another phone/app. BLE name starts with `3UC`. |
+| Connects but no data | Make sure notifications on `0xC305` are enabled and the handshake was sent (the app does this automatically — try Disconnect/Connect). |
+| History empty | Tap **↻ Refresh** while connected. If still empty on your firmware, the record index may be 1-based — a one-line change in `MainActivity`. |
+| Install blocked | See **Install** step 3 (Play Protect). |
+| Build fails | See **Build → If a build fails**. |
+
+---
+
+## Notes
+
+- Model: INVT **EVC16-AW7KGF1W(US)**, 7 kW single-phase.
+- Package: `com.radhi.invtcharger`.
+- This is a personal utility, not affiliated with INVT.
+
+Built with Claude. 🔌
