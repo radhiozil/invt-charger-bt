@@ -5,7 +5,7 @@ import java.util.TimeZone
 
 /**
  * INVT charger BLE protocol — extracted from the INVT Charge app v2.4.2 (iOS IPA,
- * pages/home/pile-info/*). This is the protocol the app actually uses over Bluetooth.
+ * pages/home/pile-info). This is the protocol the app actually uses over Bluetooth.
  *
  * Frame:  0x55 | lenLo | lenHi | protocolVersion(1) | cmd | payload... | xor | 0xAA
  *   NOTE: command is at byte 4 (byte 3 is protocolVersion). Length is total frame
