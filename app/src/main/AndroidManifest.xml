@@ -15,7 +15,7 @@
         android:allowBackup="true"
         android:label="INVT Charger BT"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.Light">
+        android:theme="@android:style/Theme.Material.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true">
