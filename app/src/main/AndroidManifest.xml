@@ -13,7 +13,9 @@
 
     <application
         android:allowBackup="true"
-        android:label="INVT Charger BT"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="INVT Charger"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <activity
