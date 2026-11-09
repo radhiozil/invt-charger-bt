@@ -568,7 +568,7 @@ class MainActivity : ComponentActivity() {
                 1 -> {
                     val y = c.get(Calendar.YEAR); val m = c.get(Calendar.MONTH)
                     key = y * 12L + m
-                    lab = SimpleDateFormat("MMM", Locale.US).format(c.time)
+                    lab = SimpleDateFormat("MMM ''yy", Locale.US).format(c.time)   // e.g. Aug '25
                 }
                 else -> {
                     val y = c.get(Calendar.YEAR); key = y.toLong(); lab = y.toString()
@@ -604,6 +604,11 @@ class MainActivity : ComponentActivity() {
             val padBottom = dp(20).toFloat(); val padTop = dp(16).toFloat()
             val gap = dp(8).toFloat()
             val barW = ((w - gap * (n + 1)) / n).coerceAtLeast(dp(4).toFloat())
+            // shrink x-axis labels so the widest one fits its slot
+            txt.textSize = 9f * dens
+            val slot = barW + gap
+            val widest = data.maxOf { txt.measureText(it.first) }
+            if (widest > slot * 0.95f) txt.textSize = (9f * dens * (slot * 0.95f / widest)).coerceAtLeast(6.5f * dens)
             val base = h - padBottom
             val usable = base - padTop
             for (i in data.indices) {
