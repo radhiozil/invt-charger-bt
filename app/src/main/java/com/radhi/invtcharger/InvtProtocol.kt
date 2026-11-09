@@ -43,6 +43,8 @@ object InvtProtocol {
     const val CMD_HANDSHAKE = 0x00
     const val CMD_STATUS = 0x01
     const val CMD_START_STOP = 19
+    const val CMD_RECORDS_COUNT = 16   // R_CHARGE_RECORDS_COUNT
+    const val CMD_RECORDS_DATA = 17    // R_CHARGE_RECORDS_DATAS
 
     val CHARGE_STATUS = mapOf(
         0 to "Idle", 1 to "Connected", 2 to "Charging", 3 to "Finished", 4 to "Fault"
@@ -85,6 +87,44 @@ object InvtProtocol {
 
     /** Start (1) or stop (0) charging. */
     fun startStop(start: Boolean): ByteArray = frame(CMD_START_STOP, intArrayOf(if (start) 1 else 0))
+
+    /** Ask the charger how many stored charging records it holds. */
+    fun recordsCountQuery(): ByteArray = frame(CMD_RECORDS_COUNT, intArrayOf(0x00))
+
+    /** Ask the charger for one stored record by index (LE16). */
+    fun recordsDataQuery(index: Int): ByteArray =
+        frame(CMD_RECORDS_DATA, intArrayOf(index and 0xFF, (index shr 8) and 0xFF))
+
+    /** Parse a records-count reply payload -> number of stored records. */
+    fun parseRecordsCount(e: IntArray): Int? {
+        if (e.size < 2) return null
+        return le16(e[0], e[1])
+    }
+
+    /** One stored charging record read from the charger's own memory. */
+    data class Record(
+        val index: Int, val gun: String, val startEpochSec: Long,
+        val totalKwh: Double, val electricityFee: Double, val serviceFee: Double,
+        val durationMin: Int, val stopReason: Int, val fault: Int
+    ) {
+        val totalFee: Double get() = electricityFee + serviceFee
+    }
+
+    /** Parse a single charge-record reply payload (needs >= 43 bytes). */
+    fun parseRecord(e: IntArray): Record? {
+        if (e.size < 43) return null
+        return Record(
+            index = le16(e[0], e[1]),
+            gun = if (e[2] == 0) "A" else "B",
+            startEpochSec = le32(e[3], e[4], e[5], e[6]).toLong() and 0xFFFFFFFFL,
+            totalKwh = le32(e[7], e[8], e[9], e[10]) / 100.0,
+            electricityFee = le32(e[31], e[32], e[33], e[34]) / 100.0,
+            serviceFee = le32(e[35], e[36], e[37], e[38]) / 100.0,
+            durationMin = le16(e[39], e[40]),
+            stopReason = e[41] and 0xFF,
+            fault = e[42] and 0xFF
+        )
+    }
 
     data class Status(
         val chargingStatus: Int, val statusDesc: String, val fault: Int,
