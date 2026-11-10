@@ -178,7 +178,13 @@ class MainActivity : ComponentActivity() {
         // header row
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val titleCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        titleCol.addView(value("INVT Charger", cFg, 22f))
+        val logo = ImageView(this).apply {
+            setImageResource(R.drawable.invt_logo)
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_START
+            contentDescription = "INVT"
+        }
+        titleCol.addView(logo, LinearLayout.LayoutParams(WRAP_CONTENT, dp(26)))
         chip = TextView(this).apply {
             text = "● Not connected"; setTextColor(cMuted); textSize = 12.5f; setPadding(0, dp(2), 0, 0)
         }
