@@ -45,6 +45,9 @@ object InvtProtocol {
     const val CMD_START_STOP = 19
     const val CMD_RECORDS_COUNT = 16   // R_CHARGE_RECORDS_COUNT
     const val CMD_RECORDS_DATA = 17    // R_CHARGE_RECORDS_DATAS
+    const val CMD_MAX_CURRENT = 5      // RW_CHARGER_MAX_CURRENT (read/write amps)
+    const val CUR_MIN = 6
+    const val CUR_MAX = 32             // EVC16-AW7KGF1W(US): 6..32 A
 
     val CHARGE_STATUS = mapOf(
         0 to "Idle", 1 to "Connected", 2 to "Charging", 3 to "Finished", 4 to "Fault"
@@ -94,6 +97,22 @@ object InvtProtocol {
     /** Ask the charger for one stored record by index (LE16). */
     fun recordsDataQuery(index: Int): ByteArray =
         frame(CMD_RECORDS_DATA, intArrayOf(index and 0xFF, (index shr 8) and 0xFF))
+
+    /** Ask the charger for its configured max charging current. */
+    fun maxCurrentQuery(): ByteArray = frame(CMD_MAX_CURRENT, intArrayOf(0x00))
+
+    /** Set the charger's max charging current (amps). Payload: write-flag + amps*10 LE16. */
+    fun setMaxCurrent(amps: Int): ByteArray {
+        val v = amps * 10
+        return frame(CMD_MAX_CURRENT, intArrayOf(1, v and 0xFF, (v shr 8) and 0xFF))
+    }
+
+    /** Parse a max-current reply -> amps, or null (write-ack / failure / short). */
+    fun parseMaxCurrent(e: IntArray): Double? {
+        if (e.size < 4) return null      // write-ack replies are shorter; ignore
+        if ((e[1] and 0xFF) != 0) return null  // non-zero status = not a value
+        return le16(e[2], e[3]) / 10.0
+    }
 
     /** Parse a records-count reply payload -> number of stored records. */
     fun parseRecordsCount(e: IntArray): Int? {

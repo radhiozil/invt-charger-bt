@@ -85,14 +85,20 @@ class MainActivity : ComponentActivity() {
     private var connectBtn: TextView? = null
     private var liveTabBtn: TextView? = null
     private var histTabBtn: TextView? = null
+    private var insTabBtn: TextView? = null
     private var livePane: LinearLayout? = null
     private var histPane: LinearLayout? = null
+    private var insPane: LinearLayout? = null
+    private var insList: LinearLayout? = null
+    private var insMode = 0   // 0 = calendar month, 1 = TNB cycle (24th–23rd)
+    private var insCalBtn: TextView? = null; private var insTnbBtn: TextView? = null
     private var badge: TextView? = null
     private var lifeKwh: TextView? = null
     private var sessKwh: TextView? = null
     private var vV: TextView? = null; private var vA: TextView? = null
     private var vKw: TextView? = null; private var vDur: TextView? = null
     private var vCost: TextView? = null; private var vFault: TextView? = null
+    private var curVal: TextView? = null; private var curSeek: SeekBar? = null
     private var updated: TextView? = null
     private var histList: LinearLayout? = null
     private var histStatus: TextView? = null
@@ -202,10 +208,12 @@ class MainActivity : ComponentActivity() {
             background = GradientDrawable().apply { cornerRadius = dp(24).toFloat(); setColor(cCard2) }
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-        liveTabBtn = tab("Live") { showTab(true) }
-        histTabBtn = tab("History") { showTab(false); if (gatt != null) pullRecords() }
+        liveTabBtn = tab("Live") { showTab(0) }
+        histTabBtn = tab("History") { showTab(1); if (gatt != null) pullRecords() }
+        insTabBtn = tab("Insights") { showTab(2); renderInsights() }
         tabBar.addView(liveTabBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         tabBar.addView(histTabBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        tabBar.addView(insTabBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         root.addView(tabBar, mv(0, 16))
 
         // ---- LIVE pane ----
@@ -249,6 +257,38 @@ class MainActivity : ComponentActivity() {
         vCost = statTile(g2, "Cost", "—")
         vFault = statTile(g2, "Fault", "0")
         livePane!!.addView(g2, mv(0, 14))
+
+        // max charging current
+        val curCard = card(cCard)
+        val curHead = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        curHead.addView(lbl("Max charging current"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        curVal = value("— A", cAccent, 20f)
+        curHead.addView(curVal)
+        curCard.addView(curHead)
+        curSeek = SeekBar(this).apply {
+            max = InvtProtocol.CUR_MAX - InvtProtocol.CUR_MIN
+            setPadding(0, dp(10), 0, 0)
+            val tint = android.content.res.ColorStateList.valueOf(cAccent)
+            progressTintList = tint; thumbTintList = tint
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
+                    if (fromUser) curVal?.text = "${InvtProtocol.CUR_MIN + p} A"
+                }
+                override fun onStartTrackingTouch(sb: SeekBar) {}
+                override fun onStopTrackingTouch(sb: SeekBar) {
+                    val amps = InvtProtocol.CUR_MIN + sb.progress
+                    if (gatt == null) { toast("Connect first"); return }
+                    send(InvtProtocol.setMaxCurrent(amps)); toast("Set to $amps A")
+                    main.postDelayed({ send(InvtProtocol.maxCurrentQuery()) }, 700)  // read back
+                }
+            })
+        }
+        curCard.addView(curSeek, mv(0, 0))
+        val curRange = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        curRange.addView(lbl("${InvtProtocol.CUR_MIN} A", cMuted, 10f, false), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        curRange.addView(lbl("${InvtProtocol.CUR_MAX} A", cMuted, 10f, false).apply { gravity = Gravity.END })
+        curCard.addView(curRange)
+        livePane!!.addView(curCard, mv(0, 14))
 
         // control buttons
         val ctl = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -298,6 +338,22 @@ class MainActivity : ComponentActivity() {
         histPane!!.addView(histList)
         root.addView(histPane)
 
+        // ---- INSIGHTS pane ----
+        insPane = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        val insSeg = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = GradientDrawable().apply { cornerRadius = dp(24).toFloat(); setColor(cCard2) }
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        insCalBtn = seg("Calendar") { insMode = 0; renderInsights() }
+        insTnbBtn = seg("TNB cycle") { insMode = 1; renderInsights() }
+        insSeg.addView(insCalBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        insSeg.addView(insTnbBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        insPane!!.addView(insSeg, mv(0, 14))
+        insList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        insPane!!.addView(insList)
+        root.addView(insPane)
+
         scroll.addView(root)
         return scroll
     }
@@ -326,13 +382,14 @@ class MainActivity : ComponentActivity() {
         return v
     }
 
-    private fun showTab(live: Boolean) {
-        livePane?.visibility = if (live) View.VISIBLE else View.GONE
-        histPane?.visibility = if (live) View.GONE else View.VISIBLE
-        liveTabBtn?.setTextColor(if (live) cFg else cMuted)
-        histTabBtn?.setTextColor(if (live) cMuted else cFg)
-        liveTabBtn?.background = if (live) GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(cCard) } else null
-        histTabBtn?.background = if (!live) GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(cCard) } else null
+    private fun showTab(idx: Int) {
+        livePane?.visibility = if (idx == 0) View.VISIBLE else View.GONE
+        histPane?.visibility = if (idx == 1) View.VISIBLE else View.GONE
+        insPane?.visibility = if (idx == 2) View.VISIBLE else View.GONE
+        fun chip(on: Boolean) = if (on) GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(cCard) } else null
+        liveTabBtn?.setTextColor(if (idx == 0) cFg else cMuted); liveTabBtn?.background = chip(idx == 0)
+        histTabBtn?.setTextColor(if (idx == 1) cFg else cMuted); histTabBtn?.background = chip(idx == 1)
+        insTabBtn?.setTextColor(if (idx == 2) cFg else cMuted); insTabBtn?.background = chip(idx == 2)
     }
 
     // ---------- permissions ----------
@@ -404,6 +461,7 @@ class MainActivity : ComponentActivity() {
             main.postDelayed({ main.post(poll) }, 700)
             // auto-pull the charger's stored records on connect (background)
             main.postDelayed({ pullRecords() }, 1800)
+            main.postDelayed({ send(InvtProtocol.maxCurrentQuery()) }, 1200)
         }
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) { rx(c.value ?: return) }
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) { rx(value) }
@@ -416,6 +474,7 @@ class MainActivity : ComponentActivity() {
                 InvtProtocol.CMD_STATUS -> InvtProtocol.parseStatus(payload)?.let { setChip("● Connected", cAccent); onStatus(it) }
                 InvtProtocol.CMD_RECORDS_COUNT -> InvtProtocol.parseRecordsCount(payload)?.let { onRecordsCount(it) }
                 InvtProtocol.CMD_RECORDS_DATA -> InvtProtocol.parseRecord(payload)?.let { onRecord(it) }
+                InvtProtocol.CMD_MAX_CURRENT -> InvtProtocol.parseMaxCurrent(payload)?.let { showCurrent(it) }
             }
         }
     }
@@ -436,6 +495,12 @@ class MainActivity : ComponentActivity() {
     }
 
     // ---------- live status + auto-log ----------
+    private fun showCurrent(amps: Double) = runOnUiThread {
+        val a = Math.round(amps).toInt()
+        curVal?.text = "$a A"
+        curSeek?.progress = (a - InvtProtocol.CUR_MIN).coerceIn(0, InvtProtocol.CUR_MAX - InvtProtocol.CUR_MIN)
+    }
+
     private fun onStatus(d: InvtProtocol.Status) = runOnUiThread {
         badge?.text = "  ${d.statusDesc}  "
         val bc = when (d.chargingStatus) { 2 -> cGreen; 4 -> cRed; 0 -> cMuted; 3 -> cBlue; else -> cBlue }
@@ -587,6 +652,116 @@ class MainActivity : ComponentActivity() {
 
         for (r in shown) list.addView(recordCard(r), mv(0, 10))
         renderChart()
+        if (insList != null) renderInsights()
+    }
+
+    // ---------- insights (per-period totals) ----------
+    private fun fmtDur(min: Int): String {
+        if (min < 60) return "$min min"
+        val h = min / 60; val m = min % 60
+        return if (m == 0) "${h}h" else "${h}h ${m}m"
+    }
+
+    /** Start and end-exclusive epoch seconds of the period that contains epochSec. */
+    private fun periodBounds(mode: Int, epochSec: Long): LongArray {
+        val c = Calendar.getInstance(); c.timeInMillis = epochSec * 1000L
+        c.set(Calendar.HOUR_OF_DAY, 0); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
+        if (mode == 0) {
+            c.set(Calendar.DAY_OF_MONTH, 1)
+            val start = c.timeInMillis / 1000L
+            c.add(Calendar.MONTH, 1)
+            return longArrayOf(start, c.timeInMillis / 1000L)
+        }
+        // TNB cycle: 24th 00:00 -> next 24th 00:00 (covers 24th through 23rd)
+        val day = c.get(Calendar.DAY_OF_MONTH)
+        c.set(Calendar.DAY_OF_MONTH, 24)
+        if (day < 24) c.add(Calendar.MONTH, -1)
+        val start = c.timeInMillis / 1000L
+        c.add(Calendar.MONTH, 1)
+        return longArrayOf(start, c.timeInMillis / 1000L)
+    }
+
+    private fun periodLabel(mode: Int, startSec: Long): String {
+        val c = Calendar.getInstance(); c.timeInMillis = startSec * 1000L
+        if (mode == 0) return SimpleDateFormat("MMMM yyyy", Locale.US).format(c.time)
+        val end = Calendar.getInstance(); end.timeInMillis = startSec * 1000L; end.add(Calendar.MONTH, 1)
+        return "24 ${SimpleDateFormat("MMM", Locale.US).format(c.time)} – 23 ${SimpleDateFormat("MMM yyyy", Locale.US).format(end.time)}"
+    }
+
+    private fun renderInsights() = runOnUiThread {
+        // active segment highlight
+        fun chip(on: Boolean) = if (on) GradientDrawable().apply { cornerRadius = dp(18).toFloat(); setColor(cCard) } else null
+        insCalBtn?.background = chip(insMode == 0); insCalBtn?.setTextColor(if (insMode == 0) cFg else cMuted)
+        insTnbBtn?.background = chip(insMode == 1); insTnbBtn?.setTextColor(if (insMode == 1) cFg else cMuted)
+
+        val list = insList ?: return@runOnUiThread
+        list.removeAllViews()
+        val recs = loadRecords().filter { it.startEpochSec > 0 && it.totalKwh > 0 }
+        if (recs.isEmpty()) {
+            val empty = card(cCard)
+            empty.addView(lbl("No data yet", cMuted, 13f, false))
+            empty.addView(TextView(this).apply { text = "Pull your charging history on the History tab first."; setTextColor(cMuted); textSize = 12f; setPadding(0, dp(6), 0, 0) })
+            list.addView(empty); return@runOnUiThread
+        }
+        // aggregate — a session that crosses a period boundary is split by time
+        data class Agg(var kwh: Double = 0.0, var cost: Double = 0.0, var dur: Int = 0, var n: Int = 0, var label: String = "")
+        val map = java.util.TreeMap<Long, Agg>()
+        for (r in recs) {
+            val start = r.startEpochSec
+            val end = start + r.durationMin.toLong() * 60L
+            val cost = costOf(r.totalKwh, r.totalFee)
+            if (end <= start) {   // zero-duration: assign whole session to its start period
+                val key = periodBounds(insMode, start)[0]
+                val a = map.getOrPut(key) { Agg(label = periodLabel(insMode, key)) }
+                a.kwh += r.totalKwh; a.cost += cost; a.dur += r.durationMin; a.n += 1
+                continue
+            }
+            val span = (end - start).toDouble()
+            var cur = start
+            while (cur < end) {
+                val b = periodBounds(insMode, cur)
+                val segEnd = minOf(end, b[1])
+                val frac = (segEnd - cur).toDouble() / span
+                val a = map.getOrPut(b[0]) { Agg(label = periodLabel(insMode, b[0])) }
+                a.kwh += r.totalKwh * frac
+                a.cost += cost * frac
+                a.dur += Math.round(r.durationMin * frac).toInt()
+                a.n += 1                       // count the session in every period it touches
+                cur = segEnd
+            }
+        }
+        if (insMode == 1) list.addView(TextView(this).apply {
+            text = "Billing cycle: 24th – 23rd"; setTextColor(cMuted); textSize = 11.5f; setPadding(dp(4), 0, 0, dp(10))
+        })
+        for (key in map.descendingKeySet()) {
+            val a = map[key]!!
+            list.addView(insightCard(a.label, a.kwh, a.cost, a.dur, a.n), mv(0, 10))
+        }
+        list.addView(TextView(this).apply {
+            text = "Sessions crossing a boundary are split by time between periods."
+            setTextColor(cMuted); textSize = 11f; setPadding(dp(4), dp(8), dp(4), 0)
+        })
+    }
+
+    private fun insightCard(label: String, kwh: Double, cost: Double, dur: Int, n: Int): View {
+        val c = card(cCard)
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(value(label, cFg, 15f), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        head.addView(lbl("$n session${if (n == 1) "" else "s"}", cMuted, 10f))
+        c.addView(head, mv(0, 10))
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(insCell("Energy", "%.2f kWh".format(kwh), cAccent), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(insCell("Cost", if (cost > 0) fmtMoney(cost) else "—", cFg), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(insCell("Duration", fmtDur(dur), cFg), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        c.addView(row)
+        return c
+    }
+
+    private fun insCell(label: String, v: String, color: Int): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(lbl(label, cMuted, 10f))
+        col.addView(value(v, color, 16f).apply { setPadding(0, dp(3), 0, 0) })
+        return col
     }
 
     // ---------- charts ----------
