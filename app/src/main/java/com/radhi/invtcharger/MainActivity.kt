@@ -27,6 +27,7 @@ import android.widget.*
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.res.ResourcesCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -52,16 +53,24 @@ class MainActivity : ComponentActivity() {
             UUID.fromString(String.format("0000%04x-0000-1000-8000-00805f9b34fb", v))
     }
 
-    // ---- palette ----
-    private val cBg = 0xFF0B0D10.toInt()
-    private val cCard = 0xFF161A20.toInt()
-    private val cCard2 = 0xFF1C212A.toInt()
-    private val cFg = 0xFFECEFF4.toInt()
-    private val cMuted = 0xFF8A93A2.toInt()
-    private val cAccent = 0xFF3DD68C.toInt()     // green
-    private val cBlue = 0xFF4F9CF9.toInt()
-    private val cRed = 0xFFE24B4A.toInt()
-    private val cAmber = 0xFFE0A33E.toInt()
+    // ---- palette (ABB ChargerSync-style: light, clean, ABB red accent) ----
+    private val cBg = 0xFFF4F4F6.toInt()         // page background (near-white)
+    private val cCard = 0xFFFFFFFF.toInt()       // cards
+    private val cCard2 = 0xFFECECEF.toInt()      // tiles / tracks / secondary surfaces
+    private val cBorder = 0xFFE2E2E6.toInt()     // hairline card border
+    private val cFg = 0xFF1A1A1A.toInt()         // near-black text
+    private val cMuted = 0xFF70707A.toInt()      // secondary text
+    private val cAccent = 0xFFFF000F.toInt()     // ABB red
+    private val cGreen = 0xFF14A44D.toInt()      // charging (success)
+    private val cBlue = 0xFF2B6CB0.toInt()       // finished / selected
+    private val cRed = 0xFFFF000F.toInt()        // fault (ABB red)
+    private val cAmber = 0xFFB9770A.toInt()      // scanning / handshaking
+
+    // ---- fonts (Inter) ----
+    private var fLight: Typeface? = null
+    private var fReg: Typeface? = null
+    private var fMed: Typeface? = null
+    private var fSemi: Typeface? = null
 
     private lateinit var btAdapter: BluetoothAdapter
     private var gatt: BluetoothGatt? = null
@@ -113,6 +122,10 @@ class MainActivity : ComponentActivity() {
         val mgr = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         btAdapter = mgr.adapter
         ratePerKwh = loadRate()
+        fLight = ResourcesCompat.getFont(this, R.font.inter_light)
+        fReg = ResourcesCompat.getFont(this, R.font.inter_regular)
+        fMed = ResourcesCompat.getFont(this, R.font.inter_medium)
+        fSemi = ResourcesCompat.getFont(this, R.font.inter_semibold)
         setContentView(buildUi())
         renderHistory()
         requestPermsThen {}
@@ -124,7 +137,10 @@ class MainActivity : ComponentActivity() {
     private fun card(bg: Int = cCard, radius: Int = 18): LinearLayout {
         val l = LinearLayout(this)
         l.orientation = LinearLayout.VERTICAL
-        l.background = GradientDrawable().apply { cornerRadius = dp(radius).toFloat(); setColor(bg) }
+        l.background = GradientDrawable().apply {
+            cornerRadius = dp(radius).toFloat(); setColor(bg)
+            setStroke(dp(1).coerceAtLeast(1), cBorder)
+        }
         l.setPadding(dp(16), dp(14), dp(16), dp(14))
         return l
     }
@@ -134,14 +150,14 @@ class MainActivity : ComponentActivity() {
             text = if (caps) t.uppercase() else t
             setTextColor(color); textSize = size
             letterSpacing = if (caps) 0.08f else 0f
-            setTypeface(typeface, Typeface.BOLD)
+            typeface = fMed ?: typeface
         }
 
     private fun value(t: String, color: Int = cFg, size: Float = 22f) =
-        TextView(this).apply { text = t; setTextColor(color); textSize = size; setTypeface(typeface, Typeface.BOLD) }
+        TextView(this).apply { text = t; setTextColor(color); textSize = size; typeface = fSemi ?: typeface }
 
     private fun pill(text: String, bg: Int, fg: Int): TextView = TextView(this).apply {
-        this.text = text; setTextColor(fg); textSize = 13f; setTypeface(typeface, Typeface.BOLD)
+        this.text = text; setTextColor(fg); textSize = 13f; typeface = fMed ?: typeface
         gravity = Gravity.CENTER
         setPadding(dp(16), dp(9), dp(16), dp(9))
         background = GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(bg) }
@@ -177,7 +193,7 @@ class MainActivity : ComponentActivity() {
         // tab switch
         val tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = GradientDrawable().apply { cornerRadius = dp(24).toFloat(); setColor(cCard) }
+            background = GradientDrawable().apply { cornerRadius = dp(24).toFloat(); setColor(cCard2) }
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
         liveTabBtn = tab("Live") { showTab(true) }
@@ -191,7 +207,7 @@ class MainActivity : ComponentActivity() {
 
         val statusCard = card()
         badge = TextView(this).apply {
-            text = "—"; setTextColor(cBg); textSize = 15f; setTypeface(typeface, Typeface.BOLD)
+            text = "—"; setTextColor(cBg); textSize = 15f; typeface = fMed ?: typeface
             gravity = Gravity.CENTER; setPadding(dp(16), dp(10), dp(16), dp(10))
             background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(cMuted) }
         }
@@ -282,14 +298,14 @@ class MainActivity : ComponentActivity() {
 
     private fun tab(text: String, onClick: () -> Unit): TextView = TextView(this).apply {
         this.text = text; textSize = 14f; gravity = Gravity.CENTER
-        setTypeface(typeface, Typeface.BOLD)
+        typeface = fMed ?: typeface
         setPadding(dp(10), dp(10), dp(10), dp(10))
         setOnClickListener { onClick() }
     }
 
     private fun seg(text: String, onClick: () -> Unit): TextView = TextView(this).apply {
         this.text = text; textSize = 12.5f; gravity = Gravity.CENTER
-        setTypeface(typeface, Typeface.BOLD)
+        typeface = fMed ?: typeface
         setPadding(dp(6), dp(8), dp(6), dp(8))
         setOnClickListener { onClick() }
     }
@@ -309,8 +325,8 @@ class MainActivity : ComponentActivity() {
         histPane?.visibility = if (live) View.GONE else View.VISIBLE
         liveTabBtn?.setTextColor(if (live) cFg else cMuted)
         histTabBtn?.setTextColor(if (live) cMuted else cFg)
-        liveTabBtn?.background = if (live) GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(cCard2) } else null
-        histTabBtn?.background = if (!live) GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(cCard2) } else null
+        liveTabBtn?.background = if (live) GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(cCard) } else null
+        histTabBtn?.background = if (!live) GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(cCard) } else null
     }
 
     // ---------- permissions ----------
@@ -391,7 +407,7 @@ class MainActivity : ComponentActivity() {
         for ((cmd, payload) in reasm.feed(bytes)) {
             when (cmd) {
                 InvtProtocol.CMD_HANDSHAKE -> setChip("● Connected", cAccent)
-                InvtProtocol.CMD_STATUS -> InvtProtocol.parseStatus(payload)?.let { onStatus(it) }
+                InvtProtocol.CMD_STATUS -> InvtProtocol.parseStatus(payload)?.let { setChip("● Connected", cAccent); onStatus(it) }
                 InvtProtocol.CMD_RECORDS_COUNT -> InvtProtocol.parseRecordsCount(payload)?.let { onRecordsCount(it) }
                 InvtProtocol.CMD_RECORDS_DATA -> InvtProtocol.parseRecord(payload)?.let { onRecord(it) }
             }
@@ -416,7 +432,7 @@ class MainActivity : ComponentActivity() {
     // ---------- live status + auto-log ----------
     private fun onStatus(d: InvtProtocol.Status) = runOnUiThread {
         badge?.text = "  ${d.statusDesc}  "
-        val bc = when (d.chargingStatus) { 2 -> cAccent; 4 -> cRed; 0 -> cMuted; 3 -> cBlue; else -> cBlue }
+        val bc = when (d.chargingStatus) { 2 -> cGreen; 4 -> cRed; 0 -> cMuted; 3 -> cBlue; else -> cBlue }
         badge?.background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(bc) }
         lifeKwh?.text = "%.2f".format(d.lifetimeKwh)
         sessKwh?.text = "%.2f".format(d.sessionKwh)
@@ -542,10 +558,10 @@ class MainActivity : ComponentActivity() {
             val chipCard = card(cCard2, 14).apply { setPadding(dp(14), dp(10), dp(14), dp(10)) }
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             row.addView(TextView(this).apply {
-                text = label; setTextColor(cFg); textSize = 13.5f; setTypeface(typeface, Typeface.BOLD)
+                text = label; setTextColor(cFg); textSize = 13.5f; typeface = fMed ?: typeface
             }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             row.addView(TextView(this).apply {
-                text = "✕ Clear"; setTextColor(cBlue); textSize = 13f; setTypeface(typeface, Typeface.BOLD)
+                text = "✕ Clear"; setTextColor(cBlue); textSize = 13f; typeface = fMed ?: typeface
                 setOnClickListener { selectedBucketKey = null; renderHistory() }
             })
             chipCard.addView(row)
@@ -637,13 +653,13 @@ class MainActivity : ComponentActivity() {
         private val bar = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cAccent }
         private val barSel = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cBlue }
         private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cCard2 }
-        private val trackSel = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF243042.toInt() }
+        private val trackSel = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFE3EBF6.toInt() }
         private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cMuted; textAlign = Paint.Align.CENTER }
         private val valTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cFg; textAlign = Paint.Align.CENTER }
         // layout cached from onDraw for hit-testing
         private var lastGap = 0f; private var lastBarW = 0f
 
-        init { isClickable = true }
+        init { isClickable = true; txt.typeface = fReg; valTxt.typeface = fMed }
 
         fun setData(d: List<Triple<Long, String, Double>>, selKey: Long?) { data = d; selectedKey = selKey; invalidate() }
 
