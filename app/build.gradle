@@ -15,9 +15,20 @@ android {
         versionName "1.0"
     }
 
+    signingConfigs {
+        debug {
+            // fixed key committed to the repo so every build signs identically
+            // and new APKs install over the top of older ones (no uninstall needed).
+            storeFile file("invt.jks")
+            storePassword "invtcharger"
+            keyAlias "invt"
+            keyPassword "invtcharger"
+        }
+    }
+
     buildTypes {
         debug {
-            // plain debuggable build; no signing config needed for a debug APK
+            signingConfig signingConfigs.debug
         }
     }
 
