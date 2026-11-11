@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:background="@drawable/widget_bg"
-    android:padding="14dp">
+    android:padding="12dp">
 
     <LinearLayout
         android:id="@+id/w_tap"
@@ -30,24 +30,23 @@
 
         <TextView android:id="@+id/w_kwh"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="—" android:textColor="#FF000F" android:textSize="24sp"
-            android:textStyle="bold" android:paddingTop="4dp" />
-        <TextView
-            android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="kWh" android:textColor="#70707A" android:textSize="11sp" />
+            android:text="—" android:textColor="#FF000F" android:textSize="20sp"
+            android:textStyle="bold" android:paddingTop="2dp"
+            android:singleLine="true" />
         <TextView android:id="@+id/w_sub"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:text="—" android:textColor="#1A1A1A" android:textSize="12sp"
-            android:paddingTop="4dp" />
+            android:text="—" android:textColor="#1A1A1A" android:textSize="11sp"
+            android:singleLine="true" />
     </LinearLayout>
 
     <ImageView
         android:layout_width="match_parent" android:layout_height="1dp"
         android:background="@drawable/widget_divider"
-        android:layout_marginTop="6dp" android:layout_marginBottom="6dp"
+        android:layout_marginTop="4dp" android:layout_marginBottom="4dp"
         android:contentDescription="@null" />
 
     <TextView android:id="@+id/w_life"
         android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:text="Lifetime —" android:textColor="#70707A" android:textSize="11sp" />
+        android:text="Lifetime —" android:textColor="#70707A" android:textSize="10sp"
+        android:singleLine="true" />
 </LinearLayout>
