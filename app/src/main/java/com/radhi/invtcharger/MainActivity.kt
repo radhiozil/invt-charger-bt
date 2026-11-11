@@ -510,7 +510,7 @@ class MainActivity : ComponentActivity() {
         vV?.text = "%.1f V".format(d.voltage)
         vA?.text = "%.1f A".format(d.current)
         vKw?.text = "%.1f kW".format(d.powerKw)
-        vDur?.text = "${d.durationMin} min"
+        vDur?.text = fmtDur(d.durationMin)
         vCost?.text = fmtMoney(costOf(d.sessionKwh, d.cost))
         vFault?.text = d.fault.toString()
         vFault?.setTextColor(if (d.fault != 0) cRed else cFg)
@@ -527,6 +527,15 @@ class MainActivity : ComponentActivity() {
             if (mergeRecords(listOf(rec))) { renderHistory(); toast("Session logged: %.2f kWh".format(d.sessionKwh)) }
         }
         lastChargingStatus = d.chargingStatus
+
+        // persist lifetime for the home-screen widget; refresh it when the value changes
+        try {
+            val p = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            if (p.getFloat("last_lifetime", -1f) != d.lifetimeKwh.toFloat()) {
+                p.edit().putFloat("last_lifetime", d.lifetimeKwh.toFloat()).apply()
+                InvtWidget.refresh(this)
+            }
+        } catch (_: Exception) {}
     }
 
     // ---------- pull stored records from the charger ----------
@@ -603,6 +612,7 @@ class MainActivity : ComponentActivity() {
             })
         }
         try { getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_RECORDS, arr.toString()).apply() } catch (_: Exception) {}
+        InvtWidget.refresh(this)
         return true
     }
 
@@ -902,7 +912,7 @@ class MainActivity : ComponentActivity() {
         val date = if (r.startEpochSec > 0) dFmt.format(Date(r.startEpochSec * 1000L)) else "Unknown date"
         left.addView(value(date, cFg, 14f))
         val sub = buildString {
-            append("${r.durationMin} min")
+            append(fmtDur(r.durationMin))
             if (r.gun.isNotEmpty()) append(" · Gun ${r.gun}")
             if (r.fault != 0) append(" · fault ${r.fault}")
         }
