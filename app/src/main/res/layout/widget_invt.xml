@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/widget_bg"
+    android:padding="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="THIS MONTH" android:textColor="#70707A" android:textSize="10sp"
+                android:fontFamily="@font/inter_medium" android:letterSpacing="0.06" />
+            <TextView android:id="@+id/w_m_kwh"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="— kWh" android:textColor="#FF000F" android:textSize="22sp"
+                android:fontFamily="@font/inter_semibold" android:paddingTop="2dp" />
+            <TextView android:id="@+id/w_m_sub"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="—" android:textColor="#70707A" android:textSize="11sp"
+                android:fontFamily="@font/inter_regular" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:paddingStart="12dp"
+            android:paddingLeft="12dp">
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="TNB CYCLE" android:textColor="#70707A" android:textSize="10sp"
+                android:fontFamily="@font/inter_medium" android:letterSpacing="0.06" />
+            <TextView android:id="@+id/w_t_kwh"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="— kWh" android:textColor="#FF000F" android:textSize="22sp"
+                android:fontFamily="@font/inter_semibold" android:paddingTop="2dp" />
+            <TextView android:id="@+id/w_t_sub"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="—" android:textColor="#70707A" android:textSize="11sp"
+                android:fontFamily="@font/inter_regular" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent" android:layout_height="1dp"
+        android:background="@drawable/widget_divider"
+        android:layout_marginTop="12dp" android:layout_marginBottom="10dp" />
+
+    <TextView android:id="@+id/w_life"
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="Lifetime  — kWh" android:textColor="#1A1A1A" android:textSize="12sp"
+        android:fontFamily="@font/inter_medium" />
+</LinearLayout>
