@@ -88,10 +88,10 @@ class InvtWidget : AppWidgetProvider() {
             val rv = RemoteViews(context.packageName, R.layout.widget_invt)
             rv.setTextViewText(R.id.w_label, if (mode == 0) "THIS MONTH" else "TNB CYCLE")
             rv.setTextViewText(R.id.w_dots, if (mode == 0) "\u25CF \u25CB" else "\u25CB \u25CF")
-            rv.setTextViewText(R.id.w_kwh, "%.1f".format(k))
+            rv.setTextViewText(R.id.w_kwh, "%.1f kWh".format(k))
             rv.setTextViewText(R.id.w_sub,
                 (if (c > 0) "RM %.2f \u00B7 ".format(c) else "") + "$n session${if (n == 1) "" else "s"}")
-            rv.setTextViewText(R.id.w_life, if (life > 0) "Lifetime %.1f kWh".format(life) else "Lifetime \u2014 connect to sync")
+            rv.setTextViewText(R.id.w_life, if (life > 0) "Lifetime %.1f kWh".format(life) else "Lifetime \u2014")
 
             val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             // tap the main area -> switch between This month / TNB cycle
