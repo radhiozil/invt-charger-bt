@@ -19,7 +19,18 @@ class InvtWidget : AppWidgetProvider() {
         for (id in ids) mgr.updateAppWidget(id, build(context))
     }
 
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == ACTION_TOGGLE) {
+            val p = context.getSharedPreferences("invt_log", Context.MODE_PRIVATE)
+            p.edit().putInt("widget_mode", 1 - p.getInt("widget_mode", 0)).apply()
+            refresh(context)
+            return
+        }
+        super.onReceive(context, intent)
+    }
+
     companion object {
+        const val ACTION_TOGGLE = "com.radhi.invtcharger.WIDGET_TOGGLE"
         /** Re-render every placed widget now (call after the app updates its data). */
         fun refresh(context: Context) {
             try {
@@ -69,18 +80,26 @@ class InvtWidget : AppWidgetProvider() {
                 }
             } catch (_: Exception) {}
 
-            fun sub(c: Double, n: Int) = (if (c > 0) "RM %.2f · ".format(c) else "") + "$n"
+            val mode = p.getInt("widget_mode", 0)          // 0 = this month, 1 = TNB cycle
+            val k = if (mode == 0) mK else tK
+            val c = if (mode == 0) mC else tC
+            val n = if (mode == 0) mN else tN
 
             val rv = RemoteViews(context.packageName, R.layout.widget_invt)
-            rv.setTextViewText(R.id.w_m_kwh, "%.1f kWh".format(mK))
-            rv.setTextViewText(R.id.w_m_sub, sub(mC, mN))
-            rv.setTextViewText(R.id.w_t_kwh, "%.1f kWh".format(tK))
-            rv.setTextViewText(R.id.w_t_sub, sub(tC, tN))
-            rv.setTextViewText(R.id.w_life, "Lifetime  %.1f kWh".format(life))
+            rv.setTextViewText(R.id.w_label, if (mode == 0) "THIS MONTH" else "TNB CYCLE")
+            rv.setTextViewText(R.id.w_dots, if (mode == 0) "\u25CF \u25CB" else "\u25CB \u25CF")
+            rv.setTextViewText(R.id.w_kwh, "%.1f".format(k))
+            rv.setTextViewText(R.id.w_sub,
+                (if (c > 0) "RM %.2f \u00B7 ".format(c) else "") + "$n session${if (n == 1) "" else "s"}")
+            rv.setTextViewText(R.id.w_life, if (life > 0) "Lifetime %.1f kWh".format(life) else "Lifetime \u2014 connect to sync")
 
             val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            val pi = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), flags)
-            rv.setOnClickPendingIntent(R.id.w_root, pi)
+            // tap the main area -> switch between This month / TNB cycle
+            val toggle = Intent(context, InvtWidget::class.java).setAction(ACTION_TOGGLE)
+            rv.setOnClickPendingIntent(R.id.w_tap, PendingIntent.getBroadcast(context, 1, toggle, flags))
+            // tap the lifetime row -> open the app
+            val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), flags)
+            rv.setOnClickPendingIntent(R.id.w_life, open)
             return rv
         }
     }
