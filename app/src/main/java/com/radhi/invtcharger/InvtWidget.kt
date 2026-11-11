@@ -86,13 +86,17 @@ class InvtWidget : AppWidgetProvider() {
             val n = if (mode == 0) mN else tN
 
             val rv = RemoteViews(context.packageName, R.layout.widget_invt)
-            rv.setTextViewText(R.id.w_label, if (mode == 0) "THIS MONTH" else "TNB CYCLE")
+            val fmt = java.text.SimpleDateFormat("MMM yy", java.util.Locale.US)
+            val monthLabel = fmt.format(java.util.Date()).uppercase()                  // e.g. NOV 26
+            val tnbLabel = "TNB " + fmt.format(java.util.Date(tEnd * 1000L)).uppercase() // cycle named by the month it ends in
+            rv.setTextViewText(R.id.w_label, if (mode == 0) monthLabel else tnbLabel)
             rv.setTextViewText(R.id.w_dots, if (mode == 0) "\u25CF \u25CB" else "\u25CB \u25CF")
             rv.setTextViewText(R.id.w_kwh, "%.1f".format(k))
             val sess = "$n session${if (n == 1) "" else "s"}"
             rv.setTextViewText(R.id.w_sub, if (c > 0) "RM %.2f".format(c) else sess)
             rv.setTextViewText(R.id.w_n, if (c > 0) sess else "")
-            rv.setTextViewText(R.id.w_life, if (life > 0) "Lifetime %.1f kWh".format(life) else "Lifetime \u2014")
+            rv.setViewVisibility(R.id.w_coin, if (c > 0) android.view.View.VISIBLE else android.view.View.GONE)
+            rv.setTextViewText(R.id.w_life, if (life > 0) "%.1f kWh".format(life) else "\u2014")
 
             val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             // tap the main area -> switch between This month / TNB cycle
@@ -100,7 +104,7 @@ class InvtWidget : AppWidgetProvider() {
             rv.setOnClickPendingIntent(R.id.w_tap, PendingIntent.getBroadcast(context, 1, toggle, flags))
             // tap the lifetime row -> open the app
             val open = PendingIntent.getActivity(context, 0, Intent(context, MainActivity::class.java), flags)
-            rv.setOnClickPendingIntent(R.id.w_life, open)
+            rv.setOnClickPendingIntent(R.id.w_life_row, open)
             return rv
         }
     }
