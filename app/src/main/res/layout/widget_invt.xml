@@ -20,15 +20,14 @@
             <TextView
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:text="THIS MONTH" android:textColor="#70707A" android:textSize="10sp"
-                android:fontFamily="@font/inter_medium" android:letterSpacing="0.06" />
+                android:textStyle="bold" />
             <TextView android:id="@+id/w_m_kwh"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:text="— kWh" android:textColor="#FF000F" android:textSize="22sp"
-                android:fontFamily="@font/inter_semibold" android:paddingTop="2dp" />
+                android:textStyle="bold" android:paddingTop="2dp" />
             <TextView android:id="@+id/w_m_sub"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="—" android:textColor="#70707A" android:textSize="11sp"
-                android:fontFamily="@font/inter_regular" />
+                android:text="—" android:textColor="#70707A" android:textSize="11sp" />
         </LinearLayout>
 
         <LinearLayout
@@ -41,25 +40,25 @@
             <TextView
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:text="TNB CYCLE" android:textColor="#70707A" android:textSize="10sp"
-                android:fontFamily="@font/inter_medium" android:letterSpacing="0.06" />
+                android:textStyle="bold" />
             <TextView android:id="@+id/w_t_kwh"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:text="— kWh" android:textColor="#FF000F" android:textSize="22sp"
-                android:fontFamily="@font/inter_semibold" android:paddingTop="2dp" />
+                android:textStyle="bold" android:paddingTop="2dp" />
             <TextView android:id="@+id/w_t_sub"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="—" android:textColor="#70707A" android:textSize="11sp"
-                android:fontFamily="@font/inter_regular" />
+                android:text="—" android:textColor="#70707A" android:textSize="11sp" />
         </LinearLayout>
     </LinearLayout>
 
-    <View
+    <ImageView
         android:layout_width="match_parent" android:layout_height="1dp"
         android:background="@drawable/widget_divider"
-        android:layout_marginTop="12dp" android:layout_marginBottom="10dp" />
+        android:layout_marginTop="12dp" android:layout_marginBottom="10dp"
+        android:contentDescription="@null" />
 
     <TextView android:id="@+id/w_life"
         android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:text="Lifetime  — kWh" android:textColor="#1A1A1A" android:textSize="12sp"
-        android:fontFamily="@font/inter_medium" />
+        android:textStyle="bold" />
 </LinearLayout>
