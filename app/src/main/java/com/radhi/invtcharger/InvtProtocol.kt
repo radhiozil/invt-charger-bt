@@ -107,6 +107,43 @@ object InvtProtocol {
         return frame(CMD_MAX_CURRENT, intArrayOf(1, v and 0xFF, (v shr 8) and 0xFF))
     }
 
+    const val CMD_DAILY_CURRENT = 9    // RW_DAILY_CURRENT_DATAS (time-of-day schedule)
+
+    /** Ask the charger for its time-of-day current schedule. */
+    fun dailyCurrentQuery(): ByteArray = frame(CMD_DAILY_CURRENT, intArrayOf(0x00))
+
+    /** Write the schedule back: write-flag, count, then [startH,startM,endH,endM,amps] per period. */
+    fun setDailyCurrent(periods: List<IntArray>): ByteArray {
+        val p = ArrayList<Int>(); p.add(1); p.add(periods.size)
+        for (x in periods) for (i in 0 until 5) p.add(x[i] and 0xFF)
+        return frame(CMD_DAILY_CURRENT, p.toIntArray())
+    }
+
+    /** A reply to cmd 5 or 9: was it a write ack, did the charger accept it, and any value read. */
+    data class RwReply(val isWrite: Boolean, val ok: Boolean, val amps: Double?, val periods: List<IntArray>?)
+
+    fun parseCurrentReply(e: IntArray): RwReply? {
+        if (e.size < 2) return null
+        val isWrite = (e[0] and 0xFF) == 1; val ok = (e[1] and 0xFF) == 0
+        val amps = if (!isWrite && ok && e.size >= 4) le16(e[2], e[3]) / 10.0 else null
+        return RwReply(isWrite, ok, amps, null)
+    }
+
+    fun parseDailyReply(e: IntArray): RwReply? {
+        if (e.size < 2) return null
+        val isWrite = (e[0] and 0xFF) == 1; val ok = (e[1] and 0xFF) == 0
+        var periods: List<IntArray>? = null
+        if (!isWrite && ok && e.size >= 3) {
+            val n = minOf(e[2] and 0xFF, 5); val out = ArrayList<IntArray>()
+            for (i in 0 until n) {
+                val o = 3 + i * 5
+                if (o + 4 < e.size) out.add(IntArray(5) { e[o + it] and 0xFF })
+            }
+            periods = out
+        }
+        return RwReply(isWrite, ok, null, periods)
+    }
+
     /** Parse a max-current reply -> amps, or null (write-ack / failure / short). */
     fun parseMaxCurrent(e: IntArray): Double? {
         if (e.size < 4) return null      // write-ack replies are shorter; ignore

@@ -99,6 +99,13 @@ class MainActivity : ComponentActivity() {
     private var vKw: TextView? = null; private var vDur: TextView? = null
     private var vCost: TextView? = null; private var vFault: TextView? = null
     private var curVal: TextView? = null; private var curSeek: SeekBar? = null
+    private var curSetBtn: TextView? = null; private var curNote: TextView? = null
+    private var chargerAmps: Int? = null                 // last value read back from the charger
+    private var dailyPeriods: MutableList<IntArray>? = null  // charger's time schedule (null = not read yet)
+    private var setStep = 0                              // 0 idle, 1 reading schedule, 2 writing max, 3 writing schedule
+    private var setTarget = 0
+    private val txQ = java.util.ArrayDeque<ByteArray>()  // BLE writes go out one at a time
+    private var txBusy = false
     private var updated: TextView? = null
     private var histList: LinearLayout? = null
     private var histStatus: TextView? = null
@@ -272,15 +279,10 @@ class MainActivity : ComponentActivity() {
             progressTintList = tint; thumbTintList = tint
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                    if (fromUser) curVal?.text = "${InvtProtocol.CUR_MIN + p} A"
+                    if (fromUser) { curVal?.text = "${InvtProtocol.CUR_MIN + p} A"; updateSetBtn() }
                 }
                 override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) {
-                    val amps = InvtProtocol.CUR_MIN + sb.progress
-                    if (gatt == null) { toast("Connect first"); return }
-                    send(InvtProtocol.setMaxCurrent(amps)); toast("Set to $amps A")
-                    main.postDelayed({ send(InvtProtocol.maxCurrentQuery()) }, 700)  // read back
-                }
+                override fun onStopTrackingTouch(sb: SeekBar) {}
             })
         }
         curCard.addView(curSeek, mv(0, 0))
@@ -288,6 +290,10 @@ class MainActivity : ComponentActivity() {
         curRange.addView(lbl("${InvtProtocol.CUR_MIN} A", cMuted, 10f, false), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         curRange.addView(lbl("${InvtProtocol.CUR_MAX} A", cMuted, 10f, false).apply { gravity = Gravity.END })
         curCard.addView(curRange)
+        curSetBtn = pill("Set", cCard2, cMuted).apply { setOnClickListener { applyCurrent() } }
+        curCard.addView(curSetBtn, mv(12, 0))
+        curNote = TextView(this).apply { text = "Connect to read the charger's setting"; setTextColor(cMuted); textSize = 11.5f; setPadding(0, dp(8), 0, 0) }
+        curCard.addView(curNote)
         livePane!!.addView(curCard, mv(0, 14))
 
         // control buttons
@@ -428,6 +434,9 @@ class MainActivity : ComponentActivity() {
         main.removeCallbacks(poll)
         gatt?.disconnect(); gatt?.close(); gatt = null
         pulling = false
+        synchronized(txQ) { txQ.clear() }; txBusy = false
+        setStep = 0; chargerAmps = null; dailyPeriods = null
+        note("Connect to read the charger's setting"); updateSetBtn()
         setChip("● Not connected", cMuted)
         runOnUiThread { connectBtn?.text = "Connect"; connectBtn?.setTextColor(cBg); connectBtn?.background = GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(cAccent) } }
     }
@@ -461,7 +470,10 @@ class MainActivity : ComponentActivity() {
             main.postDelayed({ main.post(poll) }, 700)
             // auto-pull the charger's stored records on connect (background)
             main.postDelayed({ pullRecords() }, 1800)
-            main.postDelayed({ send(InvtProtocol.maxCurrentQuery()) }, 1200)
+            main.postDelayed({ send(InvtProtocol.maxCurrentQuery()); send(InvtProtocol.dailyCurrentQuery()) }, 1200)
+        }
+        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
+            main.post { main.removeCallbacks(txTimeout); txBusy = false; pump() }
         }
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) { rx(c.value ?: return) }
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) { rx(value) }
@@ -474,7 +486,8 @@ class MainActivity : ComponentActivity() {
                 InvtProtocol.CMD_STATUS -> InvtProtocol.parseStatus(payload)?.let { setChip("● Connected", cAccent); onStatus(it) }
                 InvtProtocol.CMD_RECORDS_COUNT -> InvtProtocol.parseRecordsCount(payload)?.let { onRecordsCount(it) }
                 InvtProtocol.CMD_RECORDS_DATA -> InvtProtocol.parseRecord(payload)?.let { onRecord(it) }
-                InvtProtocol.CMD_MAX_CURRENT -> InvtProtocol.parseMaxCurrent(payload)?.let { showCurrent(it) }
+                InvtProtocol.CMD_MAX_CURRENT -> InvtProtocol.parseCurrentReply(payload)?.let { onCurrentReply(it) }
+                InvtProtocol.CMD_DAILY_CURRENT -> InvtProtocol.parseDailyReply(payload)?.let { onDailyReply(it) }
             }
         }
     }
@@ -483,22 +496,129 @@ class MainActivity : ComponentActivity() {
         override fun run() { send(InvtProtocol.statusQuery()); main.postDelayed(this, POLL_MS) }
     }
 
-    @SuppressLint("MissingPermission")
+    /** Queue a write; Android drops a BLE write sent while another is still in flight. */
     private fun send(data: ByteArray) {
-        val g = gatt ?: return
+        if (gatt == null) return
+        synchronized(txQ) { if (txQ.size > 30) txQ.clear(); txQ.add(data) }
+        main.post { pump() }
+    }
+
+    private val txTimeout = Runnable { txBusy = false; pump() }
+
+    @SuppressLint("MissingPermission")
+    private fun pump() {
+        if (txBusy) return
+        val g = gatt ?: run { synchronized(txQ) { txQ.clear() }; return }
         val wc = g.getService(SVC)?.getCharacteristic(WRITE_CHAR) ?: return
-        if (Build.VERSION.SDK_INT >= 33) {
-            g.writeCharacteristic(wc, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+        val data = synchronized(txQ) { txQ.peek() } ?: return
+        val ok = if (Build.VERSION.SDK_INT >= 33) {
+            g.writeCharacteristic(wc, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
         } else {
             @Suppress("DEPRECATION") run { wc.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT; wc.value = data; g.writeCharacteristic(wc) }
         }
+        if (ok) {
+            synchronized(txQ) { txQ.poll() }
+            txBusy = true
+            main.postDelayed(txTimeout, 1500)   // safety if the write callback never comes
+        } else {
+            main.postDelayed({ pump() }, 150)   // stack busy: retry shortly
+        }
+    }
+
+    // ---------- max charging current ----------
+    private fun selectedAmps() = InvtProtocol.CUR_MIN + (curSeek?.progress ?: 0)
+
+    private fun updateSetBtn(): Unit = runOnUiThread {
+        val sel = selectedAmps()
+        val btn = curSetBtn ?: return@runOnUiThread
+        fun style(text: String, bg: Int, fg: Int, enabled: Boolean) {
+            btn.text = text; btn.setTextColor(fg); btn.isEnabled = enabled
+            btn.background = GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(bg) }
+        }
+        when {
+            setStep != 0 -> style("Setting $setTarget A…", cCard2, cMuted, false)
+            gatt == null || chargerAmps == null -> style("Set $sel A", cCard2, cMuted, false)
+            sel == chargerAmps -> style("Saved on charger · $sel A", cCard2, cMuted, false)
+            else -> style("Set $sel A", cAccent, cBg, true)
+        }
+    }
+
+    private fun note(s: String, color: Int = cMuted): Unit = runOnUiThread { curNote?.text = s; curNote?.setTextColor(color) }
+
+    private val setTimeout = Runnable {
+        if (setStep != 0) { setStep = 0; note("No reply from the charger. Tap Set to try again.", cRed); updateSetBtn() }
+    }
+
+    private fun applyCurrent() {
+        if (gatt == null) { toast("Connect first"); return }
+        if (setStep != 0) return
+        setTarget = selectedAmps()
+        note("Sending $setTarget A to the charger…")
+        if (dailyPeriods == null) { setStep = 1; send(InvtProtocol.dailyCurrentQuery()) }   // read schedule first
+        else { setStep = 2; send(InvtProtocol.setMaxCurrent(setTarget)) }
+        main.removeCallbacks(setTimeout); main.postDelayed(setTimeout, 5000)
+        updateSetBtn()
+    }
+
+    private fun onCurrentReply(r: InvtProtocol.RwReply) {
+        if (!r.isWrite) {
+            if (r.ok && r.amps != null) showCurrent(r.amps)
+            return
+        }
+        if (setStep != 2) return
+        if (!r.ok) { finishSet(false, "The charger refused $setTarget A."); return }
+        // official app: after the max current is accepted, write the time schedule back
+        setStep = 3
+        val periods = (dailyPeriods ?: mutableListOf()).map { p -> p.copyOf().also { it[4] = minOf(it[4], setTarget) } }
+        send(InvtProtocol.setDailyCurrent(periods))
+        main.removeCallbacks(setTimeout); main.postDelayed(setTimeout, 5000)
+    }
+
+    private fun onDailyReply(r: InvtProtocol.RwReply) {
+        if (!r.isWrite) {
+            if (r.ok && r.periods != null) {
+                dailyPeriods = r.periods.toMutableList()
+                if (setStep == 0 && chargerAmps != null && r.periods.isNotEmpty())
+                    note("This charger also has a time schedule (${r.periods.size} period${if (r.periods.size == 1) "" else "s"}) set in the INVT app.")
+            }
+            if (setStep == 1) {   // schedule read done, now write the max current
+                if (dailyPeriods == null) dailyPeriods = mutableListOf()
+                setStep = 2; send(InvtProtocol.setMaxCurrent(setTarget))
+                main.removeCallbacks(setTimeout); main.postDelayed(setTimeout, 5000)
+            }
+            return
+        }
+        if (setStep != 3) return
+        if (!r.ok) { finishSet(false, "The charger refused the schedule update."); return }
+        finishSet(true, "")
+    }
+
+    private fun finishSet(ok: Boolean, msg: String) {
+        main.removeCallbacks(setTimeout)
+        setStep = 0
+        if (ok) {
+            note("Saved. Checking with the charger…")
+            send(InvtProtocol.maxCurrentQuery())          // read back to confirm
+            send(InvtProtocol.dailyCurrentQuery())
+        } else {
+            note(msg, cRed); send(InvtProtocol.maxCurrentQuery())
+        }
+        updateSetBtn()
     }
 
     // ---------- live status + auto-log ----------
-    private fun showCurrent(amps: Double) = runOnUiThread {
+    private fun showCurrent(amps: Double): Unit = runOnUiThread {
         val a = Math.round(amps).toInt()
+        val wasTarget = setTarget
+        chargerAmps = a
         curVal?.text = "$a A"
         curSeek?.progress = (a - InvtProtocol.CUR_MIN).coerceIn(0, InvtProtocol.CUR_MAX - InvtProtocol.CUR_MIN)
+        val n = curNote?.text?.toString() ?: ""
+        if (n.startsWith("Saved. Checking")) {
+            if (a == wasTarget) { note("Charger confirmed $a A.", cGreen); toast("Charging current set to $a A") }
+            else note("Charger still reports $a A, so the change didn't stick.", cRed)
+        } else if (n.startsWith("Connect to read")) note("Charger is set to $a A. Move the slider and tap Set to change it.")
+        updateSetBtn()
     }
 
     private fun onStatus(d: InvtProtocol.Status) = runOnUiThread {
