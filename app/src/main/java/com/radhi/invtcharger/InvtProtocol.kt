@@ -115,7 +115,11 @@ object InvtProtocol {
     /** Write the schedule back: write-flag, count, then [startH,startM,endH,endM,amps] per period. */
     fun setDailyCurrent(periods: List<IntArray>): ByteArray {
         val p = ArrayList<Int>(); p.add(1); p.add(periods.size)
-        for (x in periods) for (i in 0 until 5) p.add(x[i] and 0xFF)
+        for (x in periods) {
+            // a period ending at midnight is sent as 00:00, like the official app does
+            p.add(x[0] and 0xFF); p.add(x[1] and 0xFF)
+            p.add(if (x[2] >= 24) 0 else x[2] and 0xFF); p.add(x[3] and 0xFF); p.add(x[4] and 0xFF)
+        }
         return frame(CMD_DAILY_CURRENT, p.toIntArray())
     }
 
@@ -137,7 +141,11 @@ object InvtProtocol {
             val n = minOf(e[2] and 0xFF, 5); val out = ArrayList<IntArray>()
             for (i in 0 until n) {
                 val o = 3 + i * 5
-                if (o + 4 < e.size) out.add(IntArray(5) { e[o + it] and 0xFF })
+                if (o + 4 < e.size) {
+                    val x = IntArray(5) { e[o + it] and 0xFF }
+                    if (x[2] == 0 && x[3] == 0) x[2] = 24   // end 00:00 means midnight
+                    out.add(x)
+                }
             }
             periods = out
         }

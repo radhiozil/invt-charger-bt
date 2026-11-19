@@ -3,6 +3,7 @@ package com.radhi.invtcharger
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.app.TimePickerDialog
 import android.bluetooth.*
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -104,6 +105,11 @@ class MainActivity : ComponentActivity() {
     private var dailyPeriods: MutableList<IntArray>? = null  // charger's time schedule (null = not read yet)
     private var setStep = 0                              // 0 idle, 1 reading schedule, 2 writing max, 3 writing schedule
     private var setTarget = 0
+    private var saveKind = 0                             // 0 = max current, 1 = schedule
+    private var pendingPeriods: List<IntArray>? = null   // schedule to write on the next save
+    private var draftPeriods: MutableList<IntArray>? = null  // unsaved schedule edits
+    private var schedList: LinearLayout? = null; private var schedCount: TextView? = null
+    private var schedAdd: TextView? = null; private var schedSaveBtn: TextView? = null; private var schedNote: TextView? = null
     private val txQ = java.util.ArrayDeque<ByteArray>()  // BLE writes go out one at a time
     private var txBusy = false
     private var updated: TextView? = null
@@ -141,6 +147,7 @@ class MainActivity : ComponentActivity() {
         fSemi = ResourcesCompat.getFont(this, R.font.inter_semibold)
         setContentView(buildUi())
         renderHistory()
+        renderSchedule()
         requestPermsThen {}
     }
 
@@ -296,6 +303,27 @@ class MainActivity : ComponentActivity() {
         curCard.addView(curNote)
         livePane!!.addView(curCard, mv(0, 14))
 
+        // charging schedule (up to 5 time periods, each with its own current)
+        val schCard = card(cCard)
+        val schHead = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        schHead.addView(lbl("Charging schedule"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        schedCount = lbl("", cMuted, 11f, false); schHead.addView(schedCount)
+        schCard.addView(schHead)
+        schedList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        schCard.addView(schedList)
+        schedAdd = TextView(this).apply {
+            text = "+  Add period"; setTextColor(cMuted); textSize = 13f; gravity = Gravity.CENTER
+            typeface = fMed ?: typeface; setPadding(0, dp(10), 0, dp(10))
+            background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setStroke(dp(1).coerceAtLeast(1), 0xFFD0D0D6.toInt(), dp(5).toFloat(), dp(4).toFloat()) }
+            setOnClickListener { editPeriod(-1) }
+        }
+        schCard.addView(schedAdd, mv(10, 0))
+        schedSaveBtn = pill("Saved on charger", cCard2, cMuted).apply { setOnClickListener { saveSchedule() } }
+        schCard.addView(schedSaveBtn, mv(12, 0))
+        schedNote = TextView(this).apply { setTextColor(cMuted); textSize = 11.5f; setPadding(0, dp(8), 0, 0) }
+        schCard.addView(schedNote)
+        livePane!!.addView(schCard, mv(0, 14))
+
         // control buttons
         val ctl = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         startBtn = pill("▶  Start", cAccent, cBg).apply { setOnClickListener { send(InvtProtocol.startStop(true)); toast("Start sent") } }
@@ -435,7 +463,8 @@ class MainActivity : ComponentActivity() {
         gatt?.disconnect(); gatt?.close(); gatt = null
         pulling = false
         synchronized(txQ) { txQ.clear() }; txBusy = false
-        setStep = 0; chargerAmps = null; dailyPeriods = null
+        setStep = 0; chargerAmps = null; dailyPeriods = null; draftPeriods = null; pendingPeriods = null; saveKind = 0
+        renderSchedule()
         note("Connect to read the charger's setting"); updateSetBtn()
         setChip("● Not connected", cMuted)
         runOnUiThread { connectBtn?.text = "Connect"; connectBtn?.setTextColor(cBg); connectBtn?.background = GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(cAccent) } }
@@ -536,7 +565,8 @@ class MainActivity : ComponentActivity() {
             btn.background = GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(bg) }
         }
         when {
-            setStep != 0 -> style("Setting $setTarget A…", cCard2, cMuted, false)
+            setStep != 0 && saveKind == 0 -> style("Setting $setTarget A…", cCard2, cMuted, false)
+            setStep != 0 -> style("Set $sel A", cCard2, cMuted, false)
             gatt == null || chargerAmps == null -> style("Set $sel A", cCard2, cMuted, false)
             sel == chargerAmps -> style("Saved on charger · $sel A", cCard2, cMuted, false)
             else -> style("Set $sel A", cAccent, cBg, true)
@@ -546,13 +576,18 @@ class MainActivity : ComponentActivity() {
     private fun note(s: String, color: Int = cMuted): Unit = runOnUiThread { curNote?.text = s; curNote?.setTextColor(color) }
 
     private val setTimeout = Runnable {
-        if (setStep != 0) { setStep = 0; note("No reply from the charger. Tap Set to try again.", cRed); updateSetBtn() }
+        if (setStep != 0) {
+            setStep = 0
+            if (saveKind == 1) { schedMsg("No reply from the charger. Tap Save to try again.", cRed); pendingPeriods = null; saveKind = 0 }
+            else note("No reply from the charger. Tap Set to try again.", cRed)
+            updateSetBtn(); renderSchedule()
+        }
     }
 
     private fun applyCurrent() {
         if (gatt == null) { toast("Connect first"); return }
         if (setStep != 0) return
-        setTarget = selectedAmps()
+        setTarget = selectedAmps(); saveKind = 0; pendingPeriods = null
         note("Sending $setTarget A to the charger…")
         if (dailyPeriods == null) { setStep = 1; send(InvtProtocol.dailyCurrentQuery()) }   // read schedule first
         else { setStep = 2; send(InvtProtocol.setMaxCurrent(setTarget)) }
@@ -569,7 +604,7 @@ class MainActivity : ComponentActivity() {
         if (!r.ok) { finishSet(false, "The charger refused $setTarget A."); return }
         // official app: after the max current is accepted, write the time schedule back
         setStep = 3
-        val periods = (dailyPeriods ?: mutableListOf()).map { p -> p.copyOf().also { it[4] = minOf(it[4], setTarget) } }
+        val periods = pendingPeriods ?: (dailyPeriods ?: mutableListOf()).map { p -> p.copyOf().also { it[4] = minOf(it[4], setTarget) } }
         send(InvtProtocol.setDailyCurrent(periods))
         main.removeCallbacks(setTimeout); main.postDelayed(setTimeout, 5000)
     }
@@ -578,8 +613,15 @@ class MainActivity : ComponentActivity() {
         if (!r.isWrite) {
             if (r.ok && r.periods != null) {
                 dailyPeriods = r.periods.toMutableList()
-                if (setStep == 0 && chargerAmps != null && r.periods.isNotEmpty())
-                    note("This charger also has a time schedule (${r.periods.size} period${if (r.periods.size == 1) "" else "s"}) set in the INVT app.")
+                val sent = pendingPeriods
+                if (saveKind == 1 && sent != null && setStep == 0) {
+                    val same = samePeriods(sent, r.periods)
+                    schedMsg(if (same) "Charger confirmed the schedule." else "The charger's schedule doesn't match what was sent.", if (same) cGreen else cRed)
+                    if (same) toast("Schedule saved")
+                    pendingPeriods = null; saveKind = 0
+                    draftPeriods = null
+                }
+                renderSchedule()
             }
             if (setStep == 1) {   // schedule read done, now write the max current
                 if (dailyPeriods == null) dailyPeriods = mutableListOf()
@@ -596,14 +638,181 @@ class MainActivity : ComponentActivity() {
     private fun finishSet(ok: Boolean, msg: String) {
         main.removeCallbacks(setTimeout)
         setStep = 0
-        if (ok) {
+        if (saveKind == 1) {
+            if (ok) { schedMsg("Saved. Checking with the charger…"); send(InvtProtocol.dailyCurrentQuery()) }
+            else { schedMsg(msg, cRed); pendingPeriods = null; saveKind = 0; send(InvtProtocol.dailyCurrentQuery()) }
+        } else if (ok) {
             note("Saved. Checking with the charger…")
             send(InvtProtocol.maxCurrentQuery())          // read back to confirm
             send(InvtProtocol.dailyCurrentQuery())
         } else {
             note(msg, cRed); send(InvtProtocol.maxCurrentQuery())
         }
-        updateSetBtn()
+        updateSetBtn(); renderSchedule()
+    }
+
+    // ---------- charging schedule ----------
+    private fun fmtT(h: Int, m: Int) = "%02d:%02d".format(h, m)
+    private fun startMin(p: IntArray) = p[0] * 60 + p[1]
+    private fun endMin(p: IntArray) = p[2] * 60 + p[3]
+
+    private fun samePeriods(a: List<IntArray>, b: List<IntArray>): Boolean {
+        if (a.size != b.size) return false
+        val x = a.sortedBy { startMin(it) }; val y = b.sortedBy { startMin(it) }
+        return x.indices.all { x[it].contentEquals(y[it]) }
+    }
+
+    private fun schedMsg(s: String, color: Int = cMuted): Unit = runOnUiThread { schedNote?.text = s; schedNote?.setTextColor(color) }
+
+    private fun renderSchedule(): Unit = runOnUiThread {
+        val list = schedList ?: return@runOnUiThread
+        list.removeAllViews()
+        val known = dailyPeriods
+        val periods = (draftPeriods ?: known ?: mutableListOf()).sortedBy { startMin(it) }
+        val connected = gatt != null && known != null && chargerAmps != null
+        schedCount?.text = if (known == null) "" else "${periods.size} of 5"
+        for ((i, p) in periods.withIndex()) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(10), dp(10), dp(10))
+                background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(cBg); setStroke(dp(1).coerceAtLeast(1), cBorder) }
+                if (connected) setOnClickListener { editPeriod(i) }
+            }
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(value("${fmtT(p[0], p[1])} – ${fmtT(p[2], p[3])}", cFg, 16f))
+            col.addView(TextView(this).apply { text = fmtDur(endMin(p) - startMin(p)); setTextColor(cMuted); textSize = 11f })
+            row.addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            row.addView(value("${p[4]} A", cAccent, 17f).apply { setPadding(0, 0, dp(12), 0) })
+            if (connected) row.addView(TextView(this).apply {
+                text = "✕"; setTextColor(cMuted); textSize = 13f; gravity = Gravity.CENTER
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(cCard2) }
+                setOnClickListener {
+                    val d = periods.map { it.copyOf() }.toMutableList(); d.removeAt(i)
+                    draftPeriods = d; renderSchedule()
+                }
+            }, LinearLayout.LayoutParams(dp(28), dp(28)))
+            list.addView(row, mv(10, 0))
+        }
+        val dirty = draftPeriods != null && known != null && !samePeriods(draftPeriods!!, known)
+        schedAdd?.visibility = if (connected && periods.size < 5) View.VISIBLE else View.GONE
+        val btn = schedSaveBtn ?: return@runOnUiThread
+        fun style(t: String, bg: Int, fg: Int, en: Boolean) {
+            btn.text = t; btn.setTextColor(fg); btn.isEnabled = en
+            btn.background = GradientDrawable().apply { cornerRadius = dp(22).toFloat(); setColor(bg) }
+        }
+        when {
+            setStep != 0 && saveKind == 1 -> style("Saving schedule…", cCard2, cMuted, false)
+            !connected -> style("Connect to read the schedule", cCard2, cMuted, false)
+            dirty -> style("Save schedule", cAccent, cBg, true)
+            else -> style("Saved on charger", cCard2, cMuted, false)
+        }
+        btn.visibility = if (connected && !dirty && periods.isEmpty()) View.GONE else View.VISIBLE
+        val cur = schedNote?.text?.toString() ?: ""
+        val busy = cur.startsWith("Saved. Checking") || cur.startsWith("Charger confirmed") || cur.startsWith("The charger") || cur.startsWith("No reply")
+        if (dirty && setStep == 0) schedMsg("You have unsaved changes. Tap Save schedule to send them to the charger.")
+        else if (!busy || !connected) {
+            val maxA = chargerAmps
+            schedMsg(when {
+                !connected -> "Up to 5 periods, each with its own charging current."
+                periods.isEmpty() -> "No schedule. The charger always uses your max charging current ($maxA A)."
+                else -> "Outside these times the charger uses your max charging current ($maxA A). Tap a period to edit it."
+            })
+        }
+    }
+
+    /** Open the editor for period [idx] (-1 = add a new one). */
+    private fun editPeriod(idx: Int) {
+        val maxA = chargerAmps ?: return
+        val base = (draftPeriods ?: dailyPeriods ?: mutableListOf()).sortedBy { startMin(it) }.map { it.copyOf() }.toMutableList()
+        if (idx < 0 && base.size >= 5) { toast("The charger allows up to 5 periods"); return }
+        val p = if (idx >= 0) base[idx].copyOf() else intArrayOf(22, 0, 24, 0, minOf(16, maxA))
+        p[4] = p[4].coerceIn(InvtProtocol.CUR_MIN, maxA)
+
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(14), dp(22), 0) }
+        val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun field(label: String): Pair<LinearLayout, TextView> {
+            val f = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(cBg); setStroke(dp(1).coerceAtLeast(1), cBorder) }
+            }
+            f.addView(lbl(label, cMuted, 10f))
+            val v = value("", cFg, 18f); f.addView(v)
+            return f to v
+        }
+        val (sF, sV) = field("Start"); val (eF, eV) = field("End")
+        fun refreshTimes() { sV.text = fmtT(p[0], p[1]); eV.text = fmtT(p[2], p[3]) }
+        refreshTimes()
+        sF.setOnClickListener {
+            TimePickerDialog(this, { _, h, m ->
+                val t = minOf(Math.round((h * 60 + m) / 30.0).toInt() * 30, 23 * 60 + 30)   // 30-minute steps
+                p[0] = t / 60; p[1] = t % 60; refreshTimes()
+            }, p[0], p[1], true).show()
+        }
+        eF.setOnClickListener {
+            TimePickerDialog(this, { _, h, m ->
+                var t = Math.round((h * 60 + m) / 30.0).toInt() * 30                       // 30-minute steps
+                if (t == 0 || t > 24 * 60) t = 24 * 60                                         // 00:00 = midnight
+                p[2] = t / 60; p[3] = t % 60; refreshTimes()
+            }, if (p[2] == 24) 0 else p[2], p[3], true).show()
+        }
+        times.addView(sF, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = dp(6) })
+        times.addView(eF, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { leftMargin = dp(6) })
+        box.addView(times)
+        box.addView(TextView(this).apply { text = "Times go in 30-minute steps. Pick 00:00 as the end time for midnight (24:00)."; setTextColor(cMuted); textSize = 11f; setPadding(0, dp(6), 0, 0) })
+
+        val ampHead = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(14), 0, 0) }
+        ampHead.addView(lbl("Current"), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val ampV = value("${p[4]} A", cAccent, 18f); ampHead.addView(ampV)
+        box.addView(ampHead)
+        val seek = SeekBar(this).apply {
+            max = maxA - InvtProtocol.CUR_MIN; progress = p[4] - InvtProtocol.CUR_MIN
+            val tint = android.content.res.ColorStateList.valueOf(cAccent); progressTintList = tint; thumbTintList = tint
+            setPadding(0, dp(10), 0, 0)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar, v: Int, fromUser: Boolean) { p[4] = InvtProtocol.CUR_MIN + v; ampV.text = "${p[4]} A" }
+                override fun onStartTrackingTouch(sb: SeekBar) {}
+                override fun onStopTrackingTouch(sb: SeekBar) {}
+            })
+        }
+        box.addView(seek)
+        val rng = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        rng.addView(lbl("${InvtProtocol.CUR_MIN} A", cMuted, 10f, false), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        rng.addView(lbl("$maxA A (your max)", cMuted, 10f, false))
+        box.addView(rng)
+
+        val dlg = AlertDialog.Builder(this)
+            .setTitle(if (idx >= 0) "Edit period" else "New period")
+            .setView(box)
+            .setPositiveButton("Done", null)
+            .setNegativeButton("Cancel", null)
+            .create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (endMin(p) <= startMin(p)) { toast("End time must be after the start time"); return@setOnClickListener }
+                val others = base.filterIndexed { j, _ -> j != idx }
+                if (others.any { startMin(p) < endMin(it) && startMin(it) < endMin(p) }) {
+                    toast("This period overlaps another one"); return@setOnClickListener
+                }
+                if (idx >= 0) base[idx] = p else base.add(p)
+                draftPeriods = base.sortedBy { startMin(it) }.toMutableList()
+                renderSchedule(); dlg.dismiss()
+            }
+        }
+        dlg.show()
+    }
+
+    private fun saveSchedule() {
+        val draft = draftPeriods ?: return
+        val maxA = chargerAmps ?: run { toast("Connect first"); return }
+        if (gatt == null) { toast("Connect first"); return }
+        if (setStep != 0) return
+        // official app's save: write the max current, then the schedule
+        setTarget = maxA; saveKind = 1
+        pendingPeriods = draft.sortedBy { startMin(it) }.map { it.copyOf().also { x -> x[4] = minOf(x[4], maxA) } }
+        schedMsg("Sending the schedule to the charger…")
+        setStep = 2; send(InvtProtocol.setMaxCurrent(setTarget))
+        main.removeCallbacks(setTimeout); main.postDelayed(setTimeout, 5000)
+        updateSetBtn(); renderSchedule()
     }
 
     // ---------- live status + auto-log ----------
@@ -618,7 +827,7 @@ class MainActivity : ComponentActivity() {
             if (a == wasTarget) { note("Charger confirmed $a A.", cGreen); toast("Charging current set to $a A") }
             else note("Charger still reports $a A, so the change didn't stick.", cRed)
         } else if (n.startsWith("Connect to read")) note("Charger is set to $a A. Move the slider and tap Set to change it.")
-        updateSetBtn()
+        updateSetBtn(); renderSchedule()
     }
 
     private fun onStatus(d: InvtProtocol.Status) = runOnUiThread {
